@@ -125,15 +125,58 @@ def _cuts_that_can_be_shown(m) -> list[str]:
     THE PRODUCER'S OWN VERDICT IS THE TEST, AND ONLY AS A VETO. `shows_structure` is the same
     figure `_render_cuts` counts `usable` by, and `review_session` already treats the claim as
     "a claim from the producer may veto and may not grant" - so a cut the producer refused
-    certainly cannot be produced, which is the whole of what this has to decide. A cut it did NOT
-    refuse may still be refused by the home side's own measurement of its own copy of the PNG;
-    that stays where it is, and this does not try to predict it.
+    certainly cannot be produced, which is the whole of what this has to decide.
+
+    AND `shows_structure` ALONE WAS NOT ENOUGH OF A TEST, which cost four delivered meshes their
+    verdict. The home side discharges a region on `review_session.ResolvedCut.counts_cells`, which
+    ends at `wall_in_cells(bare_run_min_px, drawn_cell_px) >= WALL_CELLS_MIN` - so a frame can
+    show a perfectly regular structure and contain NO METAL AT ALL, and a picture with no wall in
+    it cannot be a picture of a wall. MEASURED on job 40e4e578's own `mesh_manifest.json`:
+
+        across_the_flow   zoom   shows_structure True    bare_run_min_px  0.0   counts_cells False
+        through_the_plate zoom   shows_structure True    bare_run_min_px 30.0   counts_cells True
+
+    `across_the_flow` was therefore NAMED here and refused there, and the reader's own sentence
+    for it is "the NARROWEST metal between two passages is 0.0 px - 0.00 cell(s) ... No column of
+    this frame along that axis is bare, so there is no metal in it at all - this is a field of
+    coolant, whatever its section does." `render_adapter` would not offer it, `visual.py` found an
+    obliged id undiscovered, and the review ended `reviewer_evidence_missing` before the model was
+    asked anything - a marker that gets no rerun. Jobs 40e4e578, 606af55e, b8f09ae9 and 110daca9
+    all delivered a mesh, a bundle and a viewer with `review_execution: failed_to_complete`.
+
+    SO THE WALL IS TESTED HERE TOO, because it is the one home-side bar this side can see. The
+    figure is the PRODUCER's: `bare_run_min_px` is published in the frame's own `content` block,
+    and `wall_in_cells` is imported from the same `sandbox/picture_structure` the drawing side
+    already uses, so the two cannot drift. The home side's OTHER bars - its ink floor, its cells
+    on the best row, its row count, its drawn-against-claimed pitch agreement - are re-measured
+    from its own copy of the PNG and genuinely cannot be predicted from here. Those stay where
+    they are; this does not try to predict them, and the asymmetry is narrowed rather than closed.
+
+    THIS DOES NOT STOP THE REGION BEING LOOKED AT. `inspection_regions` still publishes every cut
+    that was drawn, refused ones included, and `render_adapter.expand_region_targets` still OFFERS
+    a region whenever a volume is available - which, since the interior now always leaves a slab
+    at every declared plane (`native._all_declared_planes`), it effectively always is. What
+    changes is only that a region whose own picture cannot discharge it is not DEMANDED, so an
+    unmeetable demand can no longer end a review before it starts.
 
     A REGION WITH NO FRAMES AT ALL is the older shape - geometry-derived slices with no pictures
     beside them (`manifest._inspection_regions`) - and is named exactly as it always was. Nothing
     has refused those, and `_regions_published` only publishes them when there is a volume at
     home to cut them from.
     """
+    from meshpipeline.sandbox.picture_structure import WALL_CELLS_MIN, wall_in_cells
+
+    def _can_discharge(frame: dict) -> bool:
+        """Whether this ONE frame is evidence by the reader's own bar, as far as it is visible."""
+        content = frame.get("content") or {}
+        if not content.get("shows_structure"):
+            return False
+        # The drawn cell on the axis the structure repeats on. Absent is silence, and silence
+        # cannot grant: an older mesher's frame carries no `feature_pixels` and is handled by the
+        # `not spoke` arm below, which never reaches here.
+        wall = wall_in_cells(content.get("bare_run_min_px"), frame.get("feature_pixels"))
+        return wall >= WALL_CELLS_MIN
+
     out: list[str] = []
     for r in (m or {}).get("inspection_regions") or []:
         if not isinstance(r, dict) or not r.get("name"):
@@ -142,9 +185,9 @@ def _cuts_that_can_be_shown(m) -> list[str]:
         # nothing - it was never measured - and dropping its cut would silently stop naming
         # the frames an older mesher wrote, which carry windows and no measurement at all.
         # The claim may veto and may not grant, so the test is on the frames that SPOKE.
-        spoke = [f.get("content") or {} for f in (r.get("frames") or []) if isinstance(f, dict)]
-        spoke = [c for c in spoke if "shows_structure" in c]
-        if not spoke or any(c.get("shows_structure") for c in spoke):
+        frames = [f for f in (r.get("frames") or []) if isinstance(f, dict)]
+        spoke = [f for f in frames if "shows_structure" in (f.get("content") or {})]
+        if not spoke or any(_can_discharge(f) for f in spoke):
             out.append(str(r["name"]))
     return out
 
