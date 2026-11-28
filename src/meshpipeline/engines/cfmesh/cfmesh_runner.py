@@ -639,6 +639,15 @@ def octree_cell(max_cell: float, cell: float) -> float:
     return max_cell / 2.0 ** math.ceil(math.log2(max_cell / cell) - 1e-9)
 
 
+def _add_to_plan(plan: dict | None, cells: float) -> None:
+    """`cells` more in a run plan's estimate, its time, cap and fit following."""
+    if plan is None or not plan.get("estimated_cells") or not cells or cells <= 0.0:
+        return
+    plan["estimated_cells"] = int(float(plan["estimated_cells"]) + float(cells))
+    secs = plan["estimated_cells"] / CELLS_PER_SECOND
+    plan.update(estimated_seconds=round(secs, 1), run_cap_s=run_cap_for(secs), fits=fits_one_run(secs))
+
+
 def _planned_total(*, base: float | None, narrow: list, wall_cell: float, max_cell: float,
                    features: list, cell_floor: float = 0.0) -> float | None:
     """The cells a rendered case plans: `base` (the background, the wall band and the layers, at
@@ -1034,6 +1043,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                         "lengthZ": t.box_max[2] - t.box_min[2]} for i, t in enumerate(_wp.tiers)]
         _blocks += _object_refinement_blocks(_wake_boxes)
         logger.warning("cfMesh external wake (PLAN-cfd-7): %s", _wp.summary())
+        # the wake's boxes are in the cells the run is planned at, so the machine is chosen for them and the size
+        # brake measures the octree against what the case really makes (a protected near wake can cost past the body)
+        _add_to_plan(plan, _wp.cells)
     if _blocks:
         dict_parts.append("objectRefinements\n{\n" + "\n".join(_blocks) + "\n}\n")
 
@@ -1211,10 +1223,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     if _pk_cells > 0.0:
         if _planned:
             _planned = int(float(_planned) + _pk_cells)
-        if plan is not None and plan.get("estimated_cells"):
-            plan["estimated_cells"] = int(float(plan["estimated_cells"]) + _pk_cells)
-            _secs = plan["estimated_cells"] / CELLS_PER_SECOND
-            plan.update(estimated_seconds=round(_secs, 1), run_cap_s=run_cap_for(_secs), fits=fits_one_run(_secs))
+        _add_to_plan(plan, _pk_cells)
     if plan is not None:
         _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
     else:
