@@ -726,13 +726,49 @@ async def _nonverdict(inputs: VisualReviewInteractionInputs | _EarlyRefusalInput
     # A review that failed BEFORE the loop (unvalidated execution, malformed plan, missing
     # deterministic evidence, no renderable geometry, absent targets) still leaves the same
     # canonical record - that is the whole point of emitting on every exit.
-    record = _pre_loop_record(inputs, marker)
+    record = _pre_loop_record(inputs, marker, chain)
     return _reviewer_return(api_failure=marker,
                             agent_run_records=[record] if record else [])
 
 
 def _pre_loop_record(inputs: VisualReviewInteractionInputs | _EarlyRefusalInputs,
-                     marker: str) -> dict | None:
+                     marker: str, reason: str = "") -> dict | None:
+    """The record a review leaves when it could not conclude - WITH the reason it could not.
+
+    `reason` IS WHAT USED TO BE DROPPED. Each of `_nonverdict`'s six callers computes a precise
+    diagnostic and passes it as `chain`:
+
+        [EXECUTOR_SUCCESS_ABSENT] reviewer reached without validated execution
+        [PLAN_INVALID] {problems}
+        [EVIDENCE_MISSING] deterministic evidence: {list(missing)}
+        [EXPECTED_TARGET_MISSING] {absent}
+        [{failure_class}] {api_failure}          - a non-verdict from inside the loop
+        [{category}] {exc.detail}                - a render failure
+
+    `_nonverdict` declared that parameter and never read it, so all six refusals reached the
+    record as one word: the marker they share.
+
+    WHAT THAT COST, measured 2026-11-28. Four jobs - 40e4e578, 606af55e, b8f09ae9 and 110daca9 -
+    delivered a mesh, a bundle and a viewer, and each recorded exactly
+
+        {"kind": "review_inconclusive", "marker": "reviewer_evidence_missing", "reruns": 0}
+
+    and nothing more: four identical records over a marker that six different refusals share.
+    Which one had fired was only recoverable by lifting a saved `mesh_manifest.json` out of the
+    workspace volume and replaying `ArtifactResolver.resolve_cuts` and `expand_region_targets`
+    through the production path by hand. The answer was [EXPECTED_TARGET_MISSING]: the fluid
+    interior had been dropped, so `volume_available` was False, and `across_the_flow`'s only
+    countable frame is a field of pure coolant - "no column of this frame along that axis is
+    bare, so there is no metal in it at all" - which cannot discharge a region. The logs that
+    held the sentence were gone with the container by the time anyone looked.
+
+    WHY `rejection_reasons` AND NOT A NEW FIELD. It is already "eligibility's own
+    machine-readable reasons", already sanitized, and already travels in `agent_run_records`,
+    which `_REVIEWER_RETURN_KEYS` says the Reviewer owns. A refusal before the loop is the same
+    kind of fact as a rejection inside it: the submission was not accepted, and this is why.
+    Nothing else about the record changes, and the customer's own message (`note`) is untouched -
+    this is for the record and for whoever reads it next.
+    """
     try:
         from meshpipeline.agents.loop.accounting import AgentRunAccountant
         from meshpipeline.agents.loop.diagnostics import sanitized
@@ -741,8 +777,11 @@ def _pre_loop_record(inputs: VisualReviewInteractionInputs | _EarlyRefusalInputs
         acct = AgentRunAccountant(role=AgentRole.reviewer, job_id=inputs.job_id,
                                   limits=LoopLimits(), pipeline_attempt=inputs.retry_count,
                                   agent_attempt=inputs.retry_count)
-        return sanitized(acct.report(exit=LoopExit.policy_abort,
-                                     extension=ReviewRunExtension(), failure_marker=marker))
+        _why = str(reason or "").strip()
+        return sanitized(acct.report(
+            exit=LoopExit.policy_abort,
+            extension=ReviewRunExtension(rejection_reasons=((_why,) if _why else ())),
+            failure_marker=marker))
     except Exception as exc:  # noqa: BLE001 - diagnostics never fail a review
         logger.warning("Reviewer: pre-loop record not built - job_id=%s: %s", inputs.job_id, exc)
         return None
