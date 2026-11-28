@@ -167,14 +167,35 @@ def _cuts_that_can_be_shown(m) -> list[str]:
     from meshpipeline.sandbox.picture_structure import WALL_CELLS_MIN, wall_in_cells
 
     def _can_discharge(frame: dict) -> bool:
-        """Whether this ONE frame is evidence by the reader's own bar, as far as it is visible."""
+        """Whether this ONE frame is evidence by the reader's own bar, as far as it is visible.
+
+        SILENCE MAY NOT VETO HERE, AND A TEST CAUGHT ME GETTING THAT WRONG. The first version of
+        this asked `wall_in_cells(...) >= WALL_CELLS_MIN` unconditionally, and `wall_in_cells`
+        returns 0.0 when EITHER side is unmeasured - so a frame that said `shows_structure: True`
+        and nothing about its wall came back refused. `test_only_the_cut_that_holds_the_array_is_
+        demanded` went from naming `region:through_the_plate` to naming nothing, which is exactly
+        the failure the note above warns about: "dropping its cut would silently stop naming the
+        frames an older mesher wrote, which carry windows and no measurement at all."
+
+        SO THE WALL IS A SECOND VETO AND NOT A SECOND REQUIREMENT, which is the rule this whole
+        function already runs on - `review_session.shows_passages` states it as "a present False
+        still vetoes, a present True buys nothing", and an ABSENT claim is neutral. A frame that
+        MEASURED its wall and found none is refused; a frame that never measured one is left
+        exactly where it was.
+
+        AND IT IS THE OPPOSITE WAY ROUND IN `native._zoom_discharges_its_region`, deliberately.
+        There, treating silence as "not evidence" costs a slab, which is disk bounded by `cap`.
+        Here it costs an OBLIGATION, and an obligation nobody names is a region the reviewer is
+        never asked to inspect. The two sides of the same question have opposite safe defaults
+        because the two mistakes cost different things.
+        """
         content = frame.get("content") or {}
         if not content.get("shows_structure"):
             return False
-        # The drawn cell on the axis the structure repeats on. Absent is silence, and silence
-        # cannot grant: an older mesher's frame carries no `feature_pixels` and is handled by the
-        # `not spoke` arm below, which never reaches here.
-        wall = wall_in_cells(content.get("bare_run_min_px"), frame.get("feature_pixels"))
+        bare = content.get("bare_run_min_px")
+        if bare is None:
+            return True            # it never spoke about its wall; silence is not a refusal
+        wall = wall_in_cells(bare, frame.get("feature_pixels"))
         return wall >= WALL_CELLS_MIN
 
     out: list[str] = []

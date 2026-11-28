@@ -214,12 +214,18 @@ def read_plan(workspace) -> ConjugatePlan:
     # cannot match its CAD volume exactly: `_tolerance` is the measured staircase error for the
     # cells-across used, with a margin. "No error at all is acceptable" is not a statement any
     # mesh of a curved passage can satisfy, so a plan asking for it is a plan that was mis-built.
-    missing = [k for k in ("background_cell_m", "expect_fluid_volume_m3", "narrowest_m",
-                           "volume_tol")
+    # `volume_tol` IS NOT ON THIS LIST, AND A TEST TAUGHT ME WHY. I put it here first, and
+    # `test_a_plan_with_no_process_at_all_is_refused` started reporting a missing tolerance
+    # instead of the missing process it was written to catch: this check runs before every other
+    # validation in the function, so requiring a field here changes the error message of every
+    # plan that is invalid for any OTHER reason. An omitted `volume_tol` already fails on its own
+    # - `ConjugatePlan.volume_tol` has no default, so the construction below raises - and that
+    # failure arrives after the checks that have something more useful to say.
+    missing = [k for k in ("background_cell_m", "expect_fluid_volume_m3", "narrowest_m")
                if data.get(k) is None]
     if missing:
         raise ValueError(f"{PLAN_NAME} is missing {missing}, which cannot be defaulted")
-    if float(data["volume_tol"]) <= 0.0:
+    if data.get("volume_tol") is not None and float(data["volume_tol"]) <= 0.0:
         raise ValueError(
             f"{PLAN_NAME}: volume_tol is {data['volume_tol']!r}, and the coolant tolerance is "
             "what the review divides the coolant error by - a zero or negative one leaves the "

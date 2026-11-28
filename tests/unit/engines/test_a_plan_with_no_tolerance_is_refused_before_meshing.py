@@ -70,13 +70,24 @@ def test_no_non_positive_tolerance_gets_through(bad, tmp_path):
         read_plan(written(tmp_path, volume_tol=bad))
 
 
-def test_an_absent_tolerance_is_named_rather_than_crashing_the_dataclass(tmp_path):
-    """`ConjugatePlan.volume_tol` has no default, so omitting it always failed - as a TypeError
-    about a missing argument, which says nothing about what a tolerance is for."""
-    with pytest.raises(ValueError) as exc:
+def test_an_absent_tolerance_still_fails_but_is_not_this_check(tmp_path):
+    """DELIBERATELY NOT PROMOTED TO A NAMED REFUSAL, and a test taught me why.
+
+    I first added `volume_tol` to `read_plan`'s non-defaultable list so an omitted one would be
+    named. That check runs before every other validation in the function, so
+    `test_a_plan_with_no_process_at_all_is_refused` began reporting a missing tolerance instead of
+    the missing process it exists to catch - a field requirement at the top of a validator
+    rewrites the error of every plan that is invalid for any other reason.
+
+    An omitted tolerance already fails on its own: `ConjugatePlan.volume_tol` has no default, so
+    the construction raises TypeError. That is a worse message than a named ValueError, and it
+    arrives after the checks that have something more useful to say, which is the right order.
+    What this module now refuses is the case that was silently ACCEPTED - a tolerance that is
+    present and zero.
+    """
+    with pytest.raises((ValueError, TypeError)) as exc:
         read_plan(written(tmp_path, volume_tol=None))
     assert "volume_tol" in str(exc.value)
-    assert "cannot be defaulted" in str(exc.value)
 
 
 # ------------------------------------------------------------------ nothing real is refused
