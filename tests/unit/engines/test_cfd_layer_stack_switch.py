@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from meshpipeline.engines import cfd_requirements as CR
 from meshpipeline.engines.snappy import flow_gates as FG
 from meshpipeline.pipeline import engine_fallback as EF
@@ -121,3 +123,25 @@ def test_cfmesh_external_case_writes_the_shared_wake_boxes(tmp_path):
                                  domain_min=dmin, domain_max=dmax, strategy={"wall_cell": 0.002},
                                  cell_budget=4_000_000, wall_area=0.02)
     assert "wake_refinement" not in out2
+
+
+def test_cfmesh_run_plan_carries_the_wake_cells_the_size_brake_measures(tmp_path):
+    # a protected near wake can cost more than the body: the plan the brake reads must include it, or
+    # cartesianMesh is stopped as oversize on cells it was asked to make (v0.2.10 native metre-scale)
+    from meshpipeline.engines.cfmesh import cfmesh_runner as CM
+    from meshpipeline.engines.wake_region import WakeRequest
+    body = ([0.0, 0.0, 0.0], [0.1, 0.04, 0.03])
+    dmin, dmax = [-0.5, -0.4, -0.4], [1.1, 0.44, 0.43]
+    kw = {"surface_file": "constant/triSurface/case.fms", "wall_patch": "body",
+          "patches": [{"name": "body", "type": "wall"}, {"name": "farfield", "type": "farfield"}],
+          "body_bbox": body, "L": 0.1, "domain_min": dmin, "domain_max": dmax,
+          "strategy": {"wall_cell": 0.002}, "cell_budget": 4_000_000, "wall_area": 0.02}
+    (tmp_path / "bare").mkdir()
+    (tmp_path / "wake").mkdir()
+    bare = CM.render_cfmesh_case(tmp_path / "bare", **kw)
+    out = CM.render_cfmesh_case(tmp_path / "wake", wake=WakeRequest(flow_axis="+x"), **kw)
+    wake_cells = out["wake_refinement"]["est_cells"]
+    assert wake_cells > 0
+    est = json.loads((tmp_path / "wake" / CM.RUN_PLAN_FILE).read_text())["estimated_cells"]
+    assert est == pytest.approx(bare["run_plan"]["estimated_cells"] + wake_cells, abs=1)
+    assert out["run_plan"]["estimated_cells"] == est
