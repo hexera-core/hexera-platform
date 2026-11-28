@@ -260,6 +260,10 @@ def _untimed(record: dict) -> dict:
         # ("clock": the mesh's time limit as priced from the rate this machine was measured to mesh at - SHMESH-21e;
         # on a busy machine two runs of the same mesh measure different rates)
         out["quality"] = {k: v for k, v in out["quality"].items() if k not in ("passes_s", "clock")}
+        # (the extra quality passes' own stopwatch - SHMESH-100: "seconds", and "cad_s" spent reading the CAD again)
+        extra = out["quality"].get("quality_passes")
+        if isinstance(extra, dict):
+            out["quality"]["quality_passes"] = {k: v for k, v in extra.items() if k not in ("seconds", "cad_s")}
     return out
 
 
@@ -269,6 +273,11 @@ def test_untimed_ignores_only_the_wall_clock():
                                        "quality": {"passes_s": [0.1, 0.2], "elements": 401}})
     assert _untimed(base) != _untimed({**base, "quality": {"passes_s": [0.0], "elements": 400}})
     assert _untimed(base) != _untimed({**base, "elements": 400})
+    extra = {**base, "quality": {**base["quality"], "quality_passes": {"kept": 1, "seconds": 0.13, "cad_s": 0.0}}}
+    slower = {**base, "quality": {**base["quality"], "quality_passes": {"kept": 1, "seconds": 0.15, "cad_s": 0.1}}}
+    other = {**base, "quality": {**base["quality"], "quality_passes": {"kept": 2, "seconds": 0.13, "cad_s": 0.0}}}
+    assert _untimed(extra) == _untimed(slower)
+    assert _untimed(extra) != _untimed(other)
 
 
 def test_nothing_asked_is_the_surface_run_as_it_was(plain, source, tmp_path):
