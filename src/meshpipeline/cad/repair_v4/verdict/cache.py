@@ -60,7 +60,9 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: cached .7 netgen result for a multi-root file judged its first body only.
 #: .9 (lane D28): a gmsh member's `located` also carries the intersection POINTS and invalid SURFACES its 3D back-end
 #: prints or logs (never in the exception). Pass/fail unchanged; `located` is in the cached panel result.
-VERDICT_CODE_VERSION = "crs-v4.verdict.9"
+#: .10 (owner decision 2026-11-26, thin_sizing): every member sizes thin material walls locally (the product's wall
+#: law), from curvature, and above a floor; a cached .9 panel judged thin walls at one fixed size.
+VERDICT_CODE_VERSION = "crs-v4.verdict.10"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 

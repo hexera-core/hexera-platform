@@ -34,6 +34,11 @@ from meshpipeline.engines.fea_plan import base_size
 #: nodes to a tenth of a percent (97,319 vs 97,484 nodes after 2D) in 26 s.
 LC_INTEGRATION_PRECISION = 1e-3
 
+#: Mesh.MeshSizeFromCurvature, elements per 2*pi of a curved face (0 = off). THE ONE VALUE the product mesher and the
+#: CRS clean check's gmsh members share (owner, 2026-11-27: check and product mesher stay matched;
+#: cad/repair_v4/verdict/thin_sizing reads it from here).
+CURVATURE_POINTS = 0
+
 #: gmsh's Mesh.Algorithm3D number for HXT, the production fill (`fea_adapter.DEFAULT_ALGORITHM_3D`).
 HXT_ALGORITHM_3D = 10
 
@@ -56,7 +61,7 @@ def fixed_options() -> dict[str, float | int]:
         "Mesh.LcIntegrationPrecision": LC_INTEGRATION_PRECISION,
         "Geometry.OCCBoundsUseStl": 1,
         "Mesh.MeshSizeMin": 0.0,
-        "Mesh.MeshSizeFromCurvature": 0,
+        "Mesh.MeshSizeFromCurvature": CURVATURE_POINTS,
         "Mesh.MeshSizeFromPoints": 0,
         "Mesh.MeshSizeExtendFromBoundary": 0,
     }

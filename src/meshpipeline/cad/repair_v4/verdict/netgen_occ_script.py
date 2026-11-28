@@ -2,7 +2,9 @@
 # Owns: the netgen-side half of the NetgenOCC panel member; it prints exactly one JSON line.
 # Boundaries: runs under /opt/netgen-env/bin/python, which has netgen and NOT meshpipeline, gmsh or OCP -
 #             import nothing from the app here. Quality is measured by the caller, in gmsh.
-"""usage: netgen_occ_script.py STEP OUT_MSH [MAXH_DIVISOR [glue|noglue]]   (stdout: one JSON object)"""
+"""usage: netgen_occ_script.py STEP OUT_MSH [MAXH_DIVISOR [glue|noglue [SIZING_JSON]]]   (stdout: one JSON object)
+
+SIZING_JSON is thin_sizing's plan plus a "netgen" block (closeedgefac, curvaturesafety, minh in mm)."""
 
 import json
 import sys
@@ -49,7 +51,21 @@ def _named_face(geo, message: str) -> dict:
         return {}
 
 
-def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True) -> None:
+def _wall_points(sizing) -> list:
+    """thin_sizing's walls on Netgen, which has no field law: (x, y, z, h) at each wall's thin points (its closest
+    points and thin samples), where Netgen's local size is held (`MeshingParameters.RestrictH`) and grows from at its
+    own grading."""
+    out = []
+    for wall in (sizing or {}).get("walls") or []:
+        out += [(float(p[0]), float(p[1]), float(p[2]), float(wall["h_mm"])) for p in wall.get("points") or []]
+    return out
+
+
+def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True, sizing_path=None) -> None:
+    sizing = None
+    if sizing_path:
+        with open(sizing_path) as fh:
+            sizing = json.load(fh)
     try:
         from netgen.occ import Glue, OCCGeometry
     except Exception as exc:  # the interpreter has no netgen: not a finding about the file
@@ -72,13 +88,26 @@ def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True)
         return
     maxh = diag / maxh_divisor
     glued = False
+    local = (sizing or {}).get("netgen") or {}
+    spots = _wall_points(sizing)
     try:
         if glue and len(solids) > 1:
             # Touching solids share faces only if the faces are identified; Glue does that, so the
             # result is one conformal mesh instead of N meshes that happen to sit side by side.
             geo = OCCGeometry(Glue(solids))
             glued = True
-        mesh = geo.GenerateMesh(maxh=maxh)
+        # owner decision 2026-11-26 (thin_sizing): close-edge refinement, the curvature safety and a floor, from the
+        # sizing record so they cannot drift from the member's cache key; none of them when no record came
+        options = {k: float(local[k]) for k in ("closeedgefac", "curvaturesafety", "minh") if k in local}
+        if spots:
+            from netgen.meshing import MeshingParameters
+
+            mp = MeshingParameters(maxh=maxh, **options)
+            for x, y, z, h in spots:
+                mp.RestrictH(x=x, y=y, z=z, h=h)
+            mesh = geo.GenerateMesh(mp=mp)
+        else:
+            mesh = geo.GenerateMesh(maxh=maxh, **options)
     except Exception as exc:
         _emit(ok=False, stage="mesh", error=f"{type(exc).__name__}: {exc}", solids=len(solids), maxh=maxh, diag=diag,
               **_named_face(geo, str(exc)))
@@ -93,8 +122,9 @@ def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True)
     except Exception as exc:
         _emit(ok=False, stage="export", error=f"{type(exc).__name__}: {exc}", solids=len(solids), maxh=maxh)
         return
-    _emit(ok=True, tets=tets, solids=len(solids), glued=glued, maxh=maxh, diag=diag)
+    _emit(ok=True, tets=tets, solids=len(solids), glued=glued, maxh=maxh, diag=diag, wall_points=len(spots))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 10.0, sys.argv[4] != "noglue" if len(sys.argv) > 4 else True)
+    main(sys.argv[1], sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 10.0,
+         sys.argv[4] != "noglue" if len(sys.argv) > 4 else True, sys.argv[5] if len(sys.argv) > 5 else None)

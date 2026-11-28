@@ -29,6 +29,11 @@ differences (OCC scale, element size, 2D or 3D algorithm) drives a disagreement,
   default  (2D 6 Frontal-Delaunay, 3D 1 Delaunay)  gmsh as it comes, nothing set, in millimetres
   alt      (2D 1 MeshAdapt,        3D 4 Frontal)   neither of the others' algorithms, element size a
                                                     twentieth of the diagonal (`ALT_SIZE_DIVISOR`)
+
+LOCAL SIZING (owner decision 2026-11-26, `thin_sizing`): every profile also never meshes below a floor and resolves
+the part's thin material walls with the product's wall law (`local_options`, and the walls' fields from the payload's
+`sizing`). Curvature sizing stays off, as in the product (thin_sizing.CURVATURE_POINTS says why). Each profile keeps
+its algorithms and its global size.
 """
 
 from __future__ import annotations
@@ -93,7 +98,10 @@ def profile_config(name: str) -> dict:
     The prod options depend on the part's diagonal, so they are sampled at `_PROD_SAMPLE_DIAGONALS`. A
     sample pins the rule only at those points: a change that moves `options()` elsewhere only is
     not seen. Of the production settings only what `fea_mesh_config` holds is followed (see its docstring)."""
-    base: dict = {"profile": name, "min_sicn": MIN_SICN, "algorithms": list(algorithms(name))}
+    from meshpipeline.cad.repair_v4.verdict import thin_sizing
+
+    base: dict = {"profile": name, "min_sicn": MIN_SICN, "algorithms": list(algorithms(name)),
+                  "local_sizing": thin_sizing.config()}
     if name == "prod":
         from meshpipeline.engines import fea_mesh_config
 
@@ -119,12 +127,33 @@ def _profile(name: str, diag_model: float) -> tuple[float, dict[str, float]]:
     if name == "prod":
         from meshpipeline.engines import fea_mesh_config
 
-        return _METRES_PER_MM, dict(fea_mesh_config.options(diag_model))
+        return _METRES_PER_MM, {**fea_mesh_config.options(diag_model), **local_options(diag_model)}
     if name == "default":
-        return 1.0, {}
+        return 1.0, local_options(diag_model)
     if name == "alt":
-        return 1.0, {**ALT_OPTIONS, "Mesh.MeshSizeMax": diag_model / ALT_SIZE_DIVISOR}
+        return 1.0, {**ALT_OPTIONS, "Mesh.MeshSizeMax": diag_model / ALT_SIZE_DIVISOR, **local_options(diag_model)}
     raise ValueError(f"unknown mesh profile {name!r}")
+
+
+def local_options(diag_model: float) -> dict[str, float]:
+    """Owner decision 2026-11-26 (thin_sizing): curvature sizing on every gmsh member, `CURVATURE_POINTS` per 2*pi
+    (0 = off, see there). Its algorithm and global size stay. The floor and the curve integration precision are set
+    only where walls are sized (`wall_options`)."""
+    from meshpipeline.cad.repair_v4.verdict import thin_sizing
+
+    return {"Mesh.MeshSizeFromCurvature": float(thin_sizing.CURVATURE_POINTS)}
+
+
+def wall_options(diag_model: float) -> dict[str, float]:
+    """Set only when a wall's size fields are applied: the floor (`FLOOR_OF_DIAG` x diagonal, model units) and the
+    production curve integration precision (`fea_mesh_config.LC_INTEGRATION_PRECISION`: at gmsh's own 1e-9 a wall's
+    size fields are evaluated minutes long on the curves). Set on EVERY file, the precision alone turned clean-control
+    00522449 gmsh_alt from pass to low_quality with no wall sized: a file with no wall meshes exactly as before."""
+    from meshpipeline.cad.repair_v4.verdict import thin_sizing
+    from meshpipeline.engines.fea_mesh_config import LC_INTEGRATION_PRECISION
+
+    return {"Mesh.MeshSizeMin": thin_sizing.FLOOR_OF_DIAG * diag_model,
+            "Mesh.LcIntegrationPrecision": LC_INTEGRATION_PRECISION}
 
 
 def _diagonal(boxes: dict[int, tuple]) -> float:
@@ -413,6 +442,7 @@ def run_in_process(payload: dict) -> dict:
         gmsh.logger.start()
         stage = STAGE_IMPORT
         boxes: dict[int, tuple] = {}
+        applied: dict | None = None
         try:
             _set(gmsh, "Geometry.OCCScaling", scale)
             try:
@@ -422,9 +452,18 @@ def run_in_process(payload: dict) -> dict:
             gmsh.model.occ.synchronize()
             for _dim, tag in gmsh.model.getEntities(2):
                 boxes[int(tag)] = tuple(float(v) for v in gmsh.model.getBoundingBox(2, tag))
-            _scale, options = _profile(profile, _diagonal(boxes))
+            diag_model = _diagonal(boxes)
+            _scale, options = _profile(profile, diag_model)
             for key, value in options.items():
                 _set(gmsh, key, value)
+            if payload.get("sizing"):  # thin walls: the product's wall law, below the member's own global size
+                from meshpipeline.cad.repair_v4.verdict import thin_sizing
+
+                applied = thin_sizing.gmsh_fields(gmsh, payload["sizing"], scale,
+                                                  float(options.get("Mesh.MeshSizeMax", diag_model)), boxes)
+                if applied["fields"]:
+                    for key, value in wall_options(diag_model).items():
+                        _set(gmsh, key, value)
             stage = STAGE_2D
             with _captured_stdout() as printed:
                 gmsh.model.mesh.generate(2)
@@ -448,7 +487,8 @@ def run_in_process(payload: dict) -> dict:
                     where += [x for x in located_from_text(text, boxes, scale, quantum) if x not in where]
                 except Exception:  # noqa: BLE001
                     pass
-            return _answer("fail", failed_kind, failure.message, where, algorithms=_read_algorithms(gmsh))
+            return {**_answer("fail", failed_kind, failure.message, where, algorithms=_read_algorithms(gmsh)),
+                    "sizing": applied}
         ids, qualities = _tets_and_qualities(gmsh)
         status, kind = judge(qualities)
         finite = [q for q in qualities if math.isfinite(q)]
@@ -461,9 +501,8 @@ def run_in_process(payload: dict) -> dict:
                                              boundary_only=True)
             except Exception:  # noqa: BLE001
                 located = None
-        return _answer(
-            status, kind, message, located, min(finite) if finite else None, len(qualities), _read_algorithms(gmsh)
-        )
+        return {**_answer(status, kind, message, located, min(finite) if finite else None, len(qualities),
+                          _read_algorithms(gmsh)), "sizing": applied}
     finally:
         try:
             gmsh.finalize()
