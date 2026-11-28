@@ -77,6 +77,22 @@ def test_an_attempt_that_finished_before_the_clock_was_set_is_held_to_it(tmp_pat
     assert any(t.get("rule") == W.TIME_OPTIONAL_STEP and t.get("by") == "MIXED-26" for t in trips)
 
 
+def test_a_split_that_fails_is_told_in_one_plain_sentence_never_as_meshed_as_a_solid():
+    # the tank with a cone roof: the attempt finished in 145 s with the mixed route's own reason; on a shell the
+    # all-shell mesh is delivered, so "It is meshed as a solid." and its nested detail are not told (the record keeps
+    # them)
+    rec: dict = {}
+    sr._kept_not(rec, mr._Stop(mr.WHY_SPLIT.format(why="the thick regions could not be cut out (a Boolean cut "
+                                                       "failed)")))
+    assert rec["kept_solid_why"] == ("The thick regions could not be kept as solid and joined to the shell (the thin "
+                                     "walls and the thick regions could not be cut apart), so they are left out.")
+    assert "Boolean cut failed" in rec["kept_solid_detail"]
+    other: dict = {}
+    sr._kept_not(other, mr._Stop(sr.KEPT_SLOW.format(s=300.0)))
+    assert other["kept_solid_why"] == sr.KEPT_NOT.format(why=sr.KEPT_SLOW.format(s=300.0))
+    assert "kept_solid_detail" not in other
+
+
 def test_the_extras_stop_neither_ends_nor_replays_the_attempt(tmp_path):
     from meshpipeline.pipeline.executor import _attempt_ending, _guard_trip
 

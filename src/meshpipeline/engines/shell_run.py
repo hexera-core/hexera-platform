@@ -689,11 +689,29 @@ def _watched(h: dict, ws: Path, clock: float | None):
     return value
 
 
+#: the mixed route's own last words for a part it cannot split ("... It is meshed as a solid."): untrue on a shell,
+#: where the all-shell mesh is delivered (TIME-23)
+MIXED_TAIL = "It is meshed as a solid."
+
+
+def kept_not_why(why: str) -> str:
+    """TIME-23: the told reason for thick regions not kept solid - a mixed-route reason (MIXED_TAIL) told by its first
+    plain clause, without its closing words and nested detail (the record keeps the whole of it); others as given."""
+    why = str(why or "").strip()
+    if not why.endswith(MIXED_TAIL):
+        return why
+    first = why[: -len(MIXED_TAIL)].strip().split(" (", 1)[0].rstrip(". ")
+    return first[:1].lower() + first[1:]
+
+
 def _kept_not(rec: dict, exc: BaseException) -> None:
     from meshpipeline.engines import mixed_run as mr
 
     why = str(exc) if isinstance(exc, mr._Stop) else f"{type(exc).__name__}: {str(exc)[:200]}"
-    rec["kept_solid_why"] = KEPT_NOT.format(why=why.rstrip(". ") or "the join could not be made")
+    told = kept_not_why(why)
+    if told != why.strip():
+        rec["kept_solid_detail"] = why
+    rec["kept_solid_why"] = KEPT_NOT.format(why=told.rstrip(". ") or "the join could not be made")
     logger.info("shell run: thick regions not kept solid (%s)", why[:300])
 
 
