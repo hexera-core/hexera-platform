@@ -338,3 +338,24 @@ def test_with_time_to_spare_every_optional_mesh_starts_as_before(monkeypatch):
     _mesh_, applied, _n = sa._yield_both("x.brep", {}, requirements={"limits": []})
     assert len(calls) == 3
     assert "skipped" not in applied["quality"]["strip_steps_kept"]
+
+
+def test_a_later_spot_pass_is_priced_with_the_growth_the_last_one_made(monkeypatch):
+    # SHMESH-31j (fake clock), cen_s0195's numbers: the first mesh 305 s; the first spot pass took 271 s and grew the
+    # mesh 52,951 -> 62,509 elements; 307 s left. SHMESH-31h's price (305 s) fits, and the second pass ran to the
+    # deadline for nothing; priced with the growth it does not fit, so it is not started. With the time, it is.
+    clock = _Clock()
+    monkeypatch.setattr(sa, "time", clock)
+    monkeypatch.setitem(sa._RUN, "first_s", 305.0)
+    monkeypatch.setitem(sa._SPOT_COST, "s", 271.0)
+    monkeypatch.setitem(sa._RUN, "end", clock.now + 307.0 + sa.TIME_MARGIN_S)
+    grown = 62509 / 52951
+    assert sa._affords(sa._spot_price())
+    assert abs(sa._later_spot_price(grown) - 305.0 * grown) < 1e-9
+    assert not sa._affords(sa._later_spot_price(grown))
+    # a pass that made the mesh smaller: still PRICE_MARGIN above the price measured
+    assert abs(sa._later_spot_price(0.9) - 305.0 * (1.0 + sa.PRICE_MARGIN)) < 1e-9
+    monkeypatch.setitem(sa._RUN, "end", clock.now + 400.0 + sa.TIME_MARGIN_S)
+    assert sa._affords(sa._later_spot_price(grown))
+    monkeypatch.setattr(sa, "SPOT_LATER_PRICED", False)
+    assert sa._later_spot_price(grown) == sa._spot_price()

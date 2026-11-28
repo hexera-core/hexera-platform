@@ -516,6 +516,15 @@ def sizing_wall(size_mm: float) -> float:
     return float(f"{float(size_mm) / SIZING_DIVISIONS:.6g}")
 
 
+#: SURF-19 (rulebook 132): ONE ROUTE TAKES A FILE WITH NO SOLID. The solid route (MESH-1) and this route read "the faces
+#: close" by one share (cad/surface_model.CLOSED_HOLD_SHARE), one sewing unit (MESH-1e) and one face test (MESH-1d);
+#: should the two still disagree - the solid route made no solid and sent the file here, and here its faces close -
+#: the part is not handed back: with a shell asked for, its faces are meshed as the part's skin, and the user is told
+BETWEEN_ROUTES_RULE = "SURF-19"
+BETWEEN_ROUTES_WHY = ("its faces close, but no solid could be made of them, and a shell was asked for: the faces are "
+                      "meshed as the part's skin")
+
+
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thickness_mm: float | None = None,
         source: str = "", target: dict | None = None, said_shell: bool = False, others_mm: list | None = None,
         unread: str = "", stitch: bool = True, sew_mm: float | None = None, holes_mm: float | None = None,
@@ -553,6 +562,14 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                                 stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend,
                                 element_mm=_global_mm(requirements), wall_mm=wall if given else None,
                                 closed_skin=closed_skin)
+        if reading["kind"] == "closed" and (said_shell or given):
+            # SURF-19: the solid route made no solid of these faces (it sent the file here), and they close: the part
+            # is never handed back between the two routes. A shell was asked for: the faces are the part's skin
+            reading, sewn = sm.read(shape, mm_per_unit=mm_per_unit, said_shell=True, stitch=stitch, sew_mm=sew_mm,
+                                    holes_mm=holes_mm, mend=mend, element_mm=_global_mm(requirements),
+                                    wall_mm=wall if given else None, closed_skin=True)
+            reading["why"] = BETWEEN_ROUTES_WHY
+            reading["between_routes"] = True
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),

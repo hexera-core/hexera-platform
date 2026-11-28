@@ -110,7 +110,28 @@ def test_a_body_with_no_shell_is_left_out_whole():
     assert sw.left_out_lines(lo)[-1].startswith(f"- {block['body']}: the whole part, about 50 x 40 x 30 mm")
 
 
-def test_the_stage_says_what_the_shell_leaves_out_and_settles_it(boss):
+def test_the_stage_says_what_the_shell_will_keep_as_solid_and_what_if_the_join_fails(boss):
+    # MIXED-15: one mixed body MIXED-12 will try to keep whole - the stage said its boss was "not in this shell mesh"
+    view = sc.shell_view({"status": sc.READY, "scale_to_m": 0.001, "summary": sc.summarise(boss[0])},
+                         {"source_format": "step", "validity": {"kind": "brep"}, "scale_to_m": 0.001},
+                         {"value": "shell", "by": "table"})
+    assert view["mesh_as"] == "shell"
+    assert view["reason"] == ("1 thick region (about 30 x 30 x 30 mm, 26% of the part's volume) is kept as solid "
+                              "elements in the same mesh. If it cannot be joined to the shell, it is left out and the "
+                              "result says so.")
+    head, row = view["not_shelled"]
+    assert head["words"] == view["reason"] and "not in this shell mesh" not in json.dumps(view)
+    assert row["words"] == ("A thick region of the part (5 faces, about 30 x 30 x 30 mm, 26% of the part's volume) is "
+                            "kept as solid elements: it is 30 mm thick or more, too thick for a shell.")
+    assert row["short"] == "Thick region · 30 mm+ thick, 30 x 30 x 30 mm · kept as solid"
+    assert sc.settle(view)["why"] == f"{sc.SAID_SHELL} {view['reason']}"
+    _no_old_words(json.dumps(view))
+
+
+def test_the_stage_says_what_the_shell_leaves_out_and_settles_it(boss, monkeypatch):
+    from meshpipeline.engines import shell_run
+
+    monkeypatch.setattr(shell_run, "KEEP_THICK", False)      # (MIXED-12 off: the boss is left out, SHSTAGE-9)
     view = sc.shell_view({"status": sc.READY, "scale_to_m": 0.001, "summary": sc.summarise(boss[0])},
                          {"source_format": "step", "validity": {"kind": "brep"}, "scale_to_m": 0.001},
                          {"value": "shell", "by": "table"})
@@ -135,10 +156,14 @@ def test_the_stage_says_what_the_shell_leaves_out_and_settles_it(boss):
     _no_old_words(json.dumps(sc.not_shelled({**summary, "solid_more": 3})))
 
 
-def test_the_run_the_result_the_decks_and_the_reviewer_say_it(tmp_path):
+def test_the_run_the_result_the_decks_and_the_reviewer_say_it(tmp_path, monkeypatch):
     gmsh = pytest.importorskip("gmsh")  # noqa: F841
     from meshpipeline.engines import fea_results, fea_review, shell_delivery, shell_run
     from meshpipeline.engines import shell_writers as wr
+
+    # the shell without its thick region: what a run makes when MIXED-12 cannot keep it solid (tested on its own in
+    # test_shell_keeps_thick)
+    monkeypatch.setattr(shell_run, "KEEP_THICK", False)
 
     step = sf.write_step(sf.plate_with_boss(), tmp_path / "boss.step")
     ws = tmp_path / "ws"

@@ -18,6 +18,10 @@ from meshpipeline.cad.shell_words import left_out  # noqa: E402
 def test_faces_read_thick_that_hold_no_metal_are_no_thick_region(monkeypatch):
     """A 3.5 mm floor with 0.5 mm ribs: the ribs' sides and ends were seven "thick regions" (924 mm2) holding 0 mm3 past the
     walls, so a shell said seven regions were left out. Now the floor is a shell and nothing is left out."""
+    # SHELL-65 reads the ribs' sides as no thick region at all (shell, nothing left out); SHELL-62 is read without it
+    first, _ = ms.extract(sf.ribbed_floor(), mm_per_unit=1.0)
+    assert first["bodies"][0]["verdict"] == "shell" and left_out(first) == {}
+    monkeypatch.setattr(ms, "THIN_WIDEST", False)
     rec, surface = ms.extract(sf.ribbed_floor(), mm_per_unit=1.0)
     (b,) = rec["bodies"]
     assert b["verdict"] == "shell" and "solid_regions" not in b and b["bare"]["regions"] == 7
@@ -42,6 +46,7 @@ def test_real_thick_metal_stays_a_thick_region(make):
 
 def test_a_region_whose_metal_was_not_measured_stays_thick(monkeypatch):
     monkeypatch.setattr(ms, "THICK_WORK", 0)          # no reading allowed: no metal measured
+    monkeypatch.setattr(ms, "THIN_WIDEST", False)     # (SHELL-65 leaves the ribbed floor no thick region to measure)
     rec, _ = ms.extract(sf.ribbed_floor(), mm_per_unit=1.0)
     (b,) = rec["bodies"]
     assert b["verdict"] == "mixed" and all(g["volume_mm3"] is None for g in b["solid_regions"])

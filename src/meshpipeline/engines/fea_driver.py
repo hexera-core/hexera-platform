@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from meshpipeline.cad import surface_model as _surface_model
 from meshpipeline.engines import bucket_files as BF
 from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
@@ -87,6 +88,17 @@ STOP_ELEMENTS = 1.5 * P.ELEMENT_LIMIT
 # #
 # measure and plan (in the worker, pure but for the reading of the staged solid)
 # #
+
+def _staging_note(ws: Path) -> dict | None:
+    """TIME-22: what the staging said of itself when its clock ran out (engines/gmsh/gmsh_runner.STAGE_NOTE_FILE)."""
+    from meshpipeline.engines.gmsh.gmsh_runner import STAGE_NOTE_FILE
+
+    try:
+        note = json.loads((ws / STAGE_NOTE_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return note if isinstance(note, dict) and note.get("words") else None
+
 
 def staged_solid(ws: Path) -> Path | None:
     """PLAN-fea-15: the staged solid the FEA path reads - gmsh's own B-rep file when the staging
@@ -245,7 +257,92 @@ def _plain_solids(shape, tol: float, diag: float) -> tuple[Any, int, int]:
         if mk.IsDone() and _encloses(mk.Solid(), diag):
             b.Add(comp, mk.Solid())
             made += 1
+    for shell in _lone_closed_faces(sewn):
+        # MESH-1d: a face that closes on itself (a whole sphere or torus, its only edges its seam and its poles) is a
+        # closed shell of one face - the sewing hands it back as a face, never as a shell
+        mk = BRepBuilderAPI_MakeSolid(shell)
+        if mk.IsDone() and _encloses(mk.Solid(), diag):
+            b.Add(comp, mk.Solid())
+            made += 1
     return comp, made, _faces_in(comp) if made else 0
+
+
+#: MESH-1d: ONE READING OF "THE FACES CLOSE" for both routes. A face no shell holds whose every edge is its own seam or
+#: a pole (a whole sphere, a torus, a closed B-spline body written as one face) closes on itself: MESH-1 reads it as the
+#: closed shell of one face it is, as SURF-1's measure (no free edge) already did. Before, the sewing handed such faces
+#: back loose, MESH-1 found no shell and called the file open, and the surface run then refused it as closed - the part
+#: fell between the two routes (30 balls in one IGES: no mesh)
+LONE_CLOSED_FACE_RULE = "MESH-1d"
+
+
+#: MESH-1e: WHETHER THE FACES CLOSE IS READ IN MILLIMETRES TOO. The stage writes the file in metres; the surface route
+#: reads it in millimetres (SURF-15). OpenCASCADE's sewing keeps fixed absolute precisions, so the same faces can sew
+#: open in metres and closed in millimetres: a 79 mm circuit board with its parts (1,567 faces) left 8 free edges in
+#: metres - MESH-1 called it open - and none in millimetres - the surface run refused it as closed. When the metre
+#: reading makes no solid that holds the file, the faces are sewn again in millimetres, as the surface route sews them;
+#: the solids that reading makes (scaled back to metres) are the staged solid when they hold more faces.
+MM_READING_RULE = "MESH-1e"
+
+
+def _scaled(shape, factor: float):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Pnt, gp_Trsf
+
+    t = gp_Trsf()
+    t.SetScale(gp_Pnt(0.0, 0.0, 0.0), float(factor))
+    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+
+
+def _plain_solids_in_mm(step: Path, shape, diag: float) -> tuple[Any, int, int] | None:
+    """MESH-1e: _plain_solids on the faces in millimetres, its solids scaled back to the staged unit. None when the
+    staged file is already in millimetres, or the reading fails or makes no solid."""
+    try:
+        mm = staged_mm_per_unit(step)
+        if abs(mm - 1.0) < 1e-9 or mm <= 0:
+            return None
+        comp, made, held = _plain_solids(_scaled(shape, mm), _sew_tolerance() * diag * mm, diag * mm)
+        return (_scaled(comp, 1.0 / mm), made, held) if made else None
+    except Exception as exc:  # noqa: BLE001 - the metre reading stands
+        logger.info("fea driver: the faces were not read in millimetres (%s)", type(exc).__name__)
+        return None
+
+
+def _sew_tolerance() -> float:
+    from meshpipeline.cad.validity_brep import SEW_TOLERANCE
+
+    return float(SEW_TOLERANCE)
+
+
+def _lone_closed_faces(sewn) -> list:
+    """MESH-1d: each face of `sewn` that no shell holds and that closes on itself, as a shell of that one face."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Shell
+
+    out = []
+    ex = TopExp_Explorer(sewn, TopAbs_FACE, TopAbs_SHELL)
+    while ex.More():
+        face = TopoDS.Face_s(ex.Current())
+        ex.Next()
+        edges = TopExp_Explorer(face, TopAbs_EDGE)
+        some, closes = False, True
+        while edges.More():
+            e = TopoDS.Edge_s(edges.Current())
+            edges.Next()
+            some = True
+            if not (BRep_Tool.Degenerated_s(e) or BRep_Tool.IsClosed_s(e, face)):
+                closes = False
+                break
+        if not (some and closes):
+            continue
+        shell = TopoDS_Shell()
+        b = BRep_Builder()
+        b.MakeShell(shell)
+        b.Add(shell, face)
+        shell.Closed(True)
+        out.append(shell)
+    return out
 
 
 def _solidified(shape, diag: float, seen: dict | None = None) -> tuple[Any, int, int] | None:
@@ -309,7 +406,7 @@ def solidify_unfinished_words(limit_s: float = SOLIDIFY_LIMIT_S) -> str:
 
 #: MESH-1b: the share of the file's face area the solids read from its shells must hold to stand for the file (the
 #: rest is an allowance for faces a solid reading re-makes - an IGES cylinder's two halves made one)
-SOLIDS_HOLD_SHARE = 0.98
+SOLIDS_HOLD_SHARE = _surface_model.CLOSED_HOLD_SHARE        # SURF-19: the surface route reads the same share
 
 
 def _held_share(shape, comp) -> float:
@@ -353,6 +450,14 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     read_as = _solidified(shape, diag, seen)
     if read_as is not None and read_as[2] >= held:
         comp, made, held = read_as
+    if not made or _held_share(shape, comp) < SOLIDS_HOLD_SHARE:
+        # MESH-1e: the faces read again in millimetres - the unit the surface route reads them in (SURF-15) - so the
+        # two routes never read the same faces two ways
+        in_mm = _plain_solids_in_mm(step, shape, diag)
+        if in_mm is not None and in_mm[2] > held:
+            comp, made, held = in_mm
+            if seen is not None:
+                seen["read_in_mm"] = made
     if made and (share := _held_share(shape, comp)) < SOLIDS_HOLD_SHARE:
         # MESH-1b: the solids stand for the FILE only when they hold its faces. A sheet with a few faces that happen
         # to close (two beads' pockets on a stamped panel: 8 of its 73 faces) is the surface it is - reading the
@@ -2868,6 +2973,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         plans_key = ""
     stage_plans = await asyncio.to_thread(kept_plans, state) if plans_key else None
 
+    staging_note = _staging_note(ws)
+    if staging_note:
+        # TIME-22: the staging's clock ran out after the geometry was read in full - said, and the run goes ahead
+        _cite(job_id, [{"stage": "fea_plan", "decided": "preview drawn the quicker way",
+                        "rule": staging_note.get("rule"), "value": staging_note.get("wall_s"),
+                        "inputs": {"kept": staging_note.get("kept")}, "words": staging_note.get("words")}])
     seen: dict = {}
     try:
         made = await asyncio.to_thread(solids_from_shells, ws, seen)

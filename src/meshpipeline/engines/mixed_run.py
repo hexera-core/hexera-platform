@@ -290,9 +290,12 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
     return rec
 
 
-def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, requirements: dict | None = None):
+def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, requirements: dict | None = None,
+          record: dict | None = None, target: dict | None = None):
     """MIXED-5 up to the join: extract, split, mesh the shell and the solid region, join them (a MixedMesh, mm).
-    Fills `rec` with what it read; raises _Stop with the reason when the rules make no mixed mesh."""
+    Fills `rec` with what it read; raises _Stop with the reason when the rules make no mixed mesh. `record`: the
+    extraction already made into `out` (MIXED-12, engines/shell_run: not made twice); `target`: the user's element
+    count for the shell part (SHMESH-23)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopoDS import TopoDS_Shape
@@ -305,7 +308,8 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
 
     started = time.time()
     out.mkdir(parents=True, exist_ok=True)
-    record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
+    if record is None:
+        record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
     ok, why = recommend(record)
     rec.update(extract_s=round(time.time() - started, 1), thin_share=round(thin_share(record), 4),
                recommended=ok, recommend_why=why)
@@ -329,14 +333,22 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
         raise _Stop(f"the part reads as {len(solids)} solids, not one closed body")
     # MIXED-8: the walls too thick for shells are kept solid, as thick regions (their mid-faces mark them); with
     # too little shell left, the part is meshed solid
-    t1 = time.time()
-    reach = reach_of(record, solids[0], surf, mm_per_unit)
-    bad, _share, stop = too_thick(record, reach)
-    ok, why = recommend(record, reach)
-    rec.update(reach_s=round(time.time() - t1, 1), recommended=ok, recommend_why=why, too_thick=bad,
-               reach_gate=REACH_GATE, reach_mm={o: round(r, 4) for o, r in reach.items()})
-    if stop:
-        raise _Stop(stop)
+    def advice() -> tuple[list[str], str]:
+        t1 = time.time()
+        reach = reach_of(record, solids[0], surf, mm_per_unit)
+        bad, _share, stop = too_thick(record, reach)
+        ok, why = recommend(record, reach)
+        rec.update(reach_s=round(time.time() - t1, 1), recommended=ok, recommend_why=why, too_thick=bad,
+                   reach_gate=REACH_GATE, reach_mm={o: round(r, 4) for o, r in reach.items()})
+        return bad, stop
+
+    # MIXED-20: while MIXED-8 is advice (REACH_GATE off) its reading decides nothing here, so it is read last, once
+    # the mesh is joined: an attempt that fails no longer pays for it first (21 to 40 s on four board parts)
+    bad: list[str] = []
+    if REACH_GATE:
+        bad, stop = advice()
+        if stop:
+            raise _Stop(stop)
     # SHELL-23: while MIXED-8 is advice no shell wall is kept solid - a short plate is a shell here as it is in the
     # shell files, never a thick region
     order, shell_walls, marks = kept_solid(record, kept, thick, bad if REACH_GATE else [])
@@ -346,7 +358,8 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
                     "notes": split.notes}
     if not split.ok:
         if bad and REACH_GATE:
-            raise _Stop(WHY_THICK_SPLIT.format(n=len(bad), m=len(reach), k=mx.REACH_WALLS, why=split.why))
+            raise _Stop(WHY_THICK_SPLIT.format(n=len(bad), m=len(rec.get("reach_mm") or {}), k=mx.REACH_WALLS,
+                                               why=split.why))
         # MIXED-10: the split's own reason - while MIXED-8 is advice no wall was kept solid, so the walls too short for
         # shell theory are not why the split failed (34 of 51 board parts were told they were)
         raise _Stop(WHY_SPLIT.format(why=split.why))
@@ -355,8 +368,13 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
     rec2["panel_walls"] = MIXED_PANEL_WALLS
     BRepTools.Write_s(ms._compound(split.shell_faces), str(out / "shell_trimmed.brep"))
     t1 = time.time()
-    shell, applied = sa.mesh_shell(out / "shell_trimmed.brep", rec2, mm_per_unit=mm_per_unit,
-                                   requirements=requirements)
+    # MIXED-13: the walls are meshed by the shell-only run's own path (sa.mesh_run: its count set aside beside a typed
+    # global size, its count aimed again, its whole-face retry, its plan), not by the bare mesher
+    shell, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, requirements=requirements, target=target,
+                                 surface=out / "shell_trimmed.brep", record=rec2)
+    if isinstance(applied, dict):
+        rec["shell_plan"] = {k: applied[k] for k in ("target", "sizing", "count_set_aside", "places")
+                             if applied.get(k)}
     if requirements and isinstance(applied, dict) and applied.get("requirements"):
         # SHMESH-26: asked against delivered, on the shell part
         rec["requirements"] = applied["requirements"]
@@ -381,9 +399,36 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
     joined = mm.join(shell, solid, cut, part=str(bodies[0]["body"]))
     if joined.notes:
         raise _Stop("; ".join(joined.notes))
+    if isinstance(q, dict):
+        # MIXED-13: validity and Nastran's limits measured on the shell elements delivered (the overlap quads of
+        # SHLINK-4 with them), as a shell-only run measures its own
+        from meshpipeline.engines import shell_quality
+
+        # MIXED-22: an overlap quad past Nastran's own limits is cut into two triangles first (SHMESH-10's cut)
+        rec["overlap_split"] = mm.split_past_overlap(joined)
+        q = dict(q)
+        q.update(shell_quality.measure(joined.shell))
+        if q.get("valid") is False:
+            raise _Stop("the shell elements at the join are not valid")
+    if rec.get("requirements"):
+        # SHMESH-26 on the shell delivered: asked against delivered measured again with the join's elements in it
+        rec["requirements"] = joined_requirements(joined.shell, requirements, applied, rec["requirements"])
     rec.update(regions=split.cores, shell_quality=q if isinstance(q, dict) else None,
                solid_quality={k: sq.get(k) for k in ("elements", "valid", "fatal") if k in sq})
+    if not REACH_GATE:
+        advice()            # MIXED-20: the advice, read once the mesh is made
     return joined
+
+
+def joined_requirements(shell, requirements: dict | None, applied, before: dict | None) -> dict | None:
+    """SHMESH-26 on a joined mesh (MIXED-13): the requirement report made again on the shell elements delivered - the
+    overlap quads the join adds (SHLINK-4) and the triangles MIXED-22 cuts them into with them - by the same sizing
+    and places the shell part was planned with; `before` (the shell part's own report) when there is none to make."""
+    from meshpipeline.engines import shell_requirements as SR
+
+    a = applied if isinstance(applied, dict) else {}
+    again = SR.report(shell, requirements, a.get("sizing"), places=a.get("places")) if requirements else None
+    return again if again is not None else before
 
 
 class _Stop(Exception):

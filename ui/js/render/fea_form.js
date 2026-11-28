@@ -572,7 +572,7 @@ export function shellLegendHtml(s) {
 export function shellMarks(s) {
   return ((s && s.not_shelled) || []).filter((r) => r.id && r.at_mm && r.at_mm.length === 3).map((r) => ({
     id: r.id, type: r.kind === "open" ? "shell_open" : "shell_solid",
-    shape: r.kind === "open" ? "plates do not meet" : "not in the mesh", at_mm: r.at_mm }));
+    shape: r.kind === "open" ? "plates do not meet" : (r.kept ? "kept as solid" : "not in the mesh"), at_mm: r.at_mm }));
 }
 
 /** One string for what a shell view shows: a later view that says more is drawn again. */
@@ -611,7 +611,10 @@ function shellSummary(s) {
   if (bodies.length > 1) {
     const sh = bodies.filter((b) => b.verdict !== "solid").length;
     bits.push(`${sh} of ${bodies.length} parts as shell`, `${bodies.length - sh} not in the mesh`);
-  } else bits.push(solid ? `${plural(solid, "region")} left out` : "whole part");
+  } else {
+    const kept = (s.not_shelled || []).some((r) => r.kind === "solid" && r.id && r.kept);
+    bits.push(solid ? `${plural(solid, "region")} ${kept ? "kept as solid" : "left out"}` : "whole part");
+  }
   if (open) bits.push(`${open} open`);
   return esc(bits.join(" · "));
 }

@@ -5072,6 +5072,36 @@
   ]
  },
  {
+  "context": "cad/midsurface.py::_extract::check#5|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "path": "cad/midsurface.py",
+  "qualname": "_extract",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 5,
+  "receiver": "clock",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
+ },
+ {
+  "context": "cad/midsurface.py::_extract._hollow_metal::check#1|NotAPublisher|not-a-publisher|cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock",
+  "path": "cad/midsurface.py",
+  "qualname": "_extract._hollow_metal",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 1,
+  "receiver": "clock",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": [
+   "cad/midsurface.py::instance of meshpipeline.cad.midsurface._Clock"
+  ]
+ },
+ {
   "context": "cad/part_words.py::_absent_kind::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/part_words.py",
   "qualname": "_absent_kind",

@@ -1592,3 +1592,41 @@ def test_a_narrow_long_wedge_is_fitted_once_it_is_two_walls_wide(monkeypatch):
     monkeypatch.setattr(ms, "FIT_PLATE_WIDTH", False)
     old, _ = ms.extract(sf.wedge_plate(4.0, 8.0, 200.0, 25.0), mm_per_unit=1.0)
     assert [b["verdict"] for b in old["bodies"]] == ["solid"]
+
+
+@pytest.mark.parametrize("widest", [False, True])
+def test_a_closed_tube_frame_is_not_a_wall_across_its_depth(widest, monkeypatch):
+    # SHELL-64: a mitred frame of 30 x 3 mm square tube. Rays down its side walls run 30 mm in metal from its top face
+    # to its bottom face; before, that pair was a 30 mm "wall" and its mid-plane ran through the middle of the tube
+    # (the shell held 6.4 times the metal). Now only the 3 mm walls are shell, sewn shut, and the shell holds the metal.
+    # SHELL-65 (widest): the 30 mm "wall" is only 30 mm wide in its metal, so it is not thin before SHELL-64 reads it
+    monkeypatch.setattr(ms, "THIN_WIDEST", widest)
+    rec, surface = ms.extract(sf.mitred_frame(30.0, 3.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert {round(p["thickness_mm"], 3) for p in _shell_pairs(rec)} == {3.0}
+    across = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(30.0)]
+    assert across and all(not p["shell"] and p["why"] == ("" if widest else ms.HOLLOW_WHY) for p in across)
+    sewn = _sewn(rec)
+    assert sewn["open_edges"] == 0 and sewn["boundary_edges"] == 0
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.02)
+    _all_checks(rec)
+
+
+def test_a_lip_ring_of_bar_is_not_a_thin_wall_by_its_outline():
+    # SHELL-65: a 6 x 6 mm lip ring round a 200 x 180 x 2 mm panel. SHELL-2 read the ring's width from its outline
+    # (holes not counted) and called it a 6 mm thin wall: the shell held 1.29 times the part's metal (volume check
+    # False). At its widest place it is 6 mm wide, one wall: now it is a thick region and the panel alone is shell
+    rec, _surface = ms.extract(sf.plate_with_lip(), mm_per_unit=1.0)
+    (body,) = rec["bodies"]
+    assert body["verdict"] == "mixed" and len(body["solid_regions"]) == 1
+    assert {round(p["thickness_mm"], 3) for p in _shell_pairs(rec)} == {2.0}
+    assert body["mid_volume_ratio"] < 1.0
+    assert rec["checks"]["volume"] is True
+
+
+def test_the_widest_place_is_read_only_on_narrow_faces(monkeypatch):
+    # SHELL-65's cost: a face whose area over its whole outline reaches the need is wide without the measure
+    calls = []
+    monkeypatch.setattr(ms, "inscribed_width", lambda f: calls.append(f) or 0.0)
+    rec, _surface = ms.extract(sf.flat_plate(), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"] and calls == []

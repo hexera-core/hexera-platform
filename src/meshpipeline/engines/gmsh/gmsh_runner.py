@@ -106,6 +106,42 @@ def tessellate_to_stl(geom_path, out_stl, *, context=None, prepared=None,
     return out_stl
 
 
+#: TIME-22 (rulebook 132): A STAGE STOPPED BY ITS CLOCK KEEPS WHAT IT HAD FINISHED. `full` writes the staged solid and
+#: gmsh's B-rep in about a second and then draws the report's picture; on a 0.16 m blade (one B-spline face, 7,990
+#: STEP entities) the curvature-driven picture was still meshing at the 300 s wall, the process was stopped, the
+#: finished B-rep deleted and the part staged again without it. Now the files the process said it finished are kept,
+#: the picture is drawn by the shared OCC tessellator, and STAGE_NOTE_FILE says so in plain words.
+STAGE_CLOCK_RULE = "TIME-22"
+#: what the staging says of itself when its clock ran out (read by the run's narration and the lab tools)
+STAGE_NOTE_FILE = "staging_note.json"
+
+
+def stage_clock_words(wall_s: float) -> str:
+    """TIME-22's one line for the user."""
+    return (f"Drawing the preview picture of your file did not finish in {wall_s / 60:g} minutes, so it was drawn the "
+            "quicker way. Your geometry was read in full and the mesh goes ahead.")
+
+
+def _kept_past_clock(ws: Path, out_stl: Path, stdout, wall_s: float) -> bool:
+    """TIME-22: after a stop by the clock, keep the staged solid (and the B-rep) the process said it had finished.
+    True when the staged solid is kept (the partial picture is removed; the caller draws it with OCC)."""
+    text = stdout.decode(errors="replace") if isinstance(stdout, bytes) else str(stdout or "")
+    lines = text.splitlines()
+    if _STEP_DONE not in lines or not (ws / "geometry.step").exists():
+        return False
+    if _BREP_DONE not in lines:
+        (ws / "geometry.brep").unlink(missing_ok=True)
+    (ws / out_stl.name).unlink(missing_ok=True)
+    try:
+        (ws / STAGE_NOTE_FILE).write_text(json.dumps({"rule": STAGE_CLOCK_RULE, "wall_s": float(wall_s),
+                                                      "kept": sorted(n for n in ("geometry.step", "geometry.brep")
+                                                                     if (ws / n).exists()),
+                                                      "words": stage_clock_words(wall_s)}, indent=1))
+    except OSError:
+        logger.info("gmsh staging: the staging note was not written")
+    return True
+
+
 def _stage_guarded(geom_path, out_stl: Path, factor: float, *, timeout_s: float = STAGE_TIMEOUT_S,
                    extras_timeout_s: float = STAGE_EXTRAS_TIMEOUT_S) -> bool:
     """_stage_here in a process of its own (run_guarded); a crash or a hang is staged again without the
@@ -124,8 +160,14 @@ def _stage_guarded(geom_path, out_stl: Path, factor: float, *, timeout_s: float 
         wall = min(float(extras_timeout_s), float(timeout_s)) if mode == "full" else float(timeout_s)
         try:
             proc = run_guarded(args, timeout=wall, capture_output=True, text=True)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             why = f"it ran past {int(wall)} s"
+            if _kept_past_clock(ws, out_stl, exc.stdout, wall):
+                # TIME-22: the staged solid (and gmsh's B-rep) were written before the clock ran out - only the
+                # report's extras were still running: they are kept, never staged again without the B-rep
+                logger.warning("gmsh staging: %s %s after the staged solid was written - kept, the picture drawn "
+                               "by the shared OCC tessellator", Path(geom_path).name, why)
+                return False
             logger.warning("gmsh staging: %s %s - staging it %s", Path(geom_path).name, why, _NEXT[mode])
             continue
         lines = (proc.stdout or "").splitlines()

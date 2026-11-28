@@ -46,6 +46,10 @@ logger = logging.getLogger(__name__)
 #: left out reads under it for six in ten faces; the least open surface parts drawn for the lab (an open tube 40
 #: diameters long, a tank skin with a nozzle hole) read 1.2% and 1.3%.
 GAP_SHARE = 0.01
+#: MESH-1b / SURF-19: THE ONE SHARE of a file's face area its closed bodies must hold to stand for the file. Below it the
+#: solid route reads the file as the surface it is (engines/fea_driver.solids_from_shells) and so does the surface route
+#: (classify): its closed bodies are skins of the surface part
+CLOSED_HOLD_SHARE = 0.98
 #: a loop spanning under this share of its own length squared over 4 pi (a circle spans 1) is a slit: no opening
 SLIT_SHARE = 1e-4
 #: SURF-2: a free edge whose every sample point lies within NEAR_SEW sew tolerances of another face is an edge
@@ -720,6 +724,11 @@ CLOSED_SKIN_WHY = ("its faces close round a space with no wall in it, and a shel
                    "part's skin")
 
 
+def _closed(sheets: list[dict]) -> int:
+    """How many sheets close (SURF-2's re-sewing is kept only when it closes no sheet that was open: SURF-19)."""
+    return sum(1 for s in sheets if s["closed"])
+
+
 def classify(sheets: list[dict], *, said_shell: bool = False, closed_skin: bool = False) -> tuple[str, str, float]:
     """SURF-1: (kind, why, the file's open share) from the measured sheets. "closed" when any sheet closes (the
     file's closed shells are read as the solids they bound, MESH-1, as before); "gap" when the openings of the whole
@@ -731,11 +740,20 @@ def classify(sheets: list[dict], *, said_shell: bool = False, closed_skin: bool 
     area = sum(s["area_mm2"] for s in sheets)
     spanned = sum(s["open_share"] * s["area_mm2"] for s in sheets)
     share = spanned / area if area > 0 else 0.0
-    if any(s["closed"] for s in sheets):
+    closed = [s for s in sheets if s["closed"]]
+    if closed and (closed_skin or sum(s["area_mm2"] for s in closed) >= CLOSED_HOLD_SHARE * area):
         if closed_skin:
             return "surface", CLOSED_SKIN_WHY, _r(share)
         return "closed", "its faces close into a solid", _r(share)
     pct = f"{100 * share:.2g}%"
+    if closed and (share > GAP_SHARE or said_shell):
+        # SURF-19: closed bodies that hold less than MESH-1b's share of the file are not the part (MESH-1b sent it
+        # here as the surface it is): they are skins of the surface part, meshed with it and told
+        held = sum(s["area_mm2"] for s in closed) / area if area > 0 else 0.0
+        n = len(closed)
+        return ("surface", f"its faces do not close into a solid: {n} closed bod{'y' if n == 1 else 'ies'} among them "
+                           f"({100 * held:.2g}% of the surface) {'is' if n == 1 else 'are'} meshed as "
+                           f"{'its' if n == 1 else 'their'} skin with the rest", _r(share))
     if share > GAP_SHARE:
         return "surface", f"it holds no solid and its faces do not close: the open edges span {pct} of the surface", \
             _r(share)
@@ -852,7 +870,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         joined = sew(shape, junctions=True, leave_out=out)
         if joined is not None and len(joined.faces) == len(sewn.faces):
             again = measure(joined, mm_per_unit=mm_per_unit)
-            if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
+            if sum(int(s["unmet_edges"]) for s in again) < unmet and _closed(again) <= _closed(sheets):
                 sewn, sheets = joined, again
                 unmet = sum(int(s["unmet_edges"]) for s in sheets)
         if unmet:
@@ -860,7 +878,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
             scored = imprint(sewn)
             if scored is not None:
                 again = measure(scored, mm_per_unit=mm_per_unit)
-                if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
+                if sum(int(s["unmet_edges"]) for s in again) < unmet and _closed(again) <= _closed(sheets):
                     sewn, sheets = scored, again
         kind, why, share = classify(sheets, said_shell=said_shell, closed_skin=closed_skin)
     cleaned: dict | None = None
@@ -937,6 +955,8 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
                "sheets": sheets}
     if cleaned is not None:
         reading["cleaned"] = cleaned
+    if kind == "surface" and not closed_skin and _closed(sheets):
+        reading["closed_bodies"] = _closed(sheets)           # SURF-19: meshed as their skins with the rest
     return reading, (sewn if kind in ("surface", "gap") else None)
 
 

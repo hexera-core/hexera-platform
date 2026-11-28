@@ -153,6 +153,7 @@ def size_plan(rows: list[dict], req: Mapping | None, areas_mm2: list[float], *, 
     cannot be built (a plan past `planned_max` elements) is stepped to the nearest size that can."""
     s = (req or {}).get("sizes") or {}
     G, lo, hi, growth = (s.get(k) for k in ("global_mm", "min_edge_mm", "max_edge_mm", "growth"))
+    lo_typed = lo is not None      # (SHMESH-101: a typed shortest edge holds; our own default may give way)
     aspect = min([float(lim["target"]) for lim in (req or {}).get("limits") or []
                   if lim.get("measure") == "aspect_ratio" and "quad" in _shapes(lim)], default=None)
     if G is None and lo is None and hi is None and growth is None and aspect is None:
@@ -166,7 +167,7 @@ def size_plan(rows: list[dict], req: Mapping | None, areas_mm2: list[float], *, 
     rules_planned = sum(a / r["size_mm"] ** 2 for a, r in zip(areas_mm2, rows, strict=True))
     out: dict = {"global_mm": G, "low_mm": lo, "high_mm": hi, "floor_mm": _r(floor) if floor is not None else None,
                  "growth": growth, "stretch": ASPECT_SHARE * aspect if aspect is not None else None,
-                 "rules_planned": int(round(rules_planned)), "held": False}
+                 "rules_planned": int(round(rules_planned)), "held": False, "low_typed": lo_typed}
     if G is None and lo is None and hi is None:
         out["planned"] = out["rules_planned"]
         return out
