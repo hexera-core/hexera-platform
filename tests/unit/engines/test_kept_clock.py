@@ -38,7 +38,9 @@ def test_an_attempt_past_its_clock_is_stopped_and_the_user_is_told(tmp_path):
     assert time.time() - started < 10
     assert str(got.value) == sr.KEPT_CLOCK.format(s=0.5, k=sr.KEPT_PER_PLAIN)
     trips = json.loads((tmp_path / "guard_trips.json").read_text())
-    assert any(t.get("rule") == "MIXED-26" and t.get("where") == "shell_thick_kept" for t in trips)
+    # TIME-23: recorded as an optional extra's stop (by MIXED-26), which never ends the attempt
+    assert any(t.get("rule") == "TIME-23" and t.get("by") == "MIXED-26" and t.get("where") == "shell_thick_kept"
+               for t in trips)
 
 
 def test_an_attempt_inside_its_clock_finishes_and_its_seconds_are_read(tmp_path):

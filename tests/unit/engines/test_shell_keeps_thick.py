@@ -116,7 +116,9 @@ def test_a_join_that_cannot_fit_its_time_is_not_started_and_the_shell_says_so(tm
     assert "more than the 300 s allowed), so they are left out." in rec["words"]
     assert "CTETRA" not in (ws / "shell.bdf").read_text()
     trips = json.loads((ws / "guard_trips.json").read_text())
-    assert any(t.get("rule") == "MIXED-16" and t.get("where") == "shell_thick_kept" for t in trips)
+    # TIME-23: an optional extra's stop (by MIXED-16), never one that ends the attempt
+    assert any(t.get("rule") == "TIME-23" and t.get("by") == "MIXED-16" and t.get("where") == "shell_thick_kept"
+               for t in trips)
 
 
 def _mixed(share: float) -> dict:

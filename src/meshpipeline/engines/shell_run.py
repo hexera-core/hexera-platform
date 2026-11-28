@@ -495,6 +495,9 @@ def _wait(h: dict, budget_s: float, ws: Path, grow_s: float | None = None, clock
 
     p, rx = h["p"], h["rx"]
     end = h["t0"] + budget_s                        # MIXED-12: wall seconds, the last stop
+    if clock_s is not None:
+        h["clock_s"] = clock_s
+    # (MIXED-29: watched from its start, the attempt's MIXED-26 clock is set in h once the all-shell mesh is made)
 
     def used() -> float:
         # MIXED-27: the clocks count the attempt's own CPU seconds (wall seconds where /proc cannot tell)
@@ -505,6 +508,7 @@ def _wait(h: dict, budget_s: float, ws: Path, grow_s: float | None = None, clock
     while got is None:
         spent = max(spent, used())
         left = [end - time.time()]
+        clock_s = h.get("clock_s")
         if clock_s is not None:
             left.append(float(clock_s) - spent)
         if growing is not None and grow_s is not None:
@@ -539,9 +543,12 @@ def _wait(h: dict, budget_s: float, ws: Path, grow_s: float | None = None, clock
         from meshpipeline.engines.determinism import note_guard_trip
 
         h["stopped_cpu_s"] = round(spent, 1) if h.get("by_cpu") else None
+        from meshpipeline.contracts.work_limits import TIME_OPTIONAL_STEP
+
         try:
-            note_guard_trip("shell_thick_kept", workspace=ws,
-                            rule={"grow": "MIXED-25", "clock": "MIXED-26"}.get(slow, "MIXED-12"),
+            # TIME-23: the kept-solid attempt is an extra - its stop is recorded, and never ends the attempt
+            note_guard_trip("shell_thick_kept", workspace=ws, rule=TIME_OPTIONAL_STEP,
+                            by={"grow": "MIXED-25", "clock": "MIXED-26"}.get(slow, "MIXED-12"),
                             budget_s=float(grow_s if slow == "grow" and grow_s is not None
                                            else clock_s if slow == "clock" and clock_s is not None else budget_s),
                             wall_s=round(time.time() - h["t0"], 1), cpu_s=h["stopped_cpu_s"])
@@ -601,10 +608,11 @@ def _kept_start(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
         ahead = kept_ahead(float(rec.get("extract_s") or 0.0), budget) if budget > 0 else ""
         if ahead:
             # MIXED-16: it cannot finish in its time, so it is not started (a TIME-3 guard, recorded as the trip is)
+            from meshpipeline.contracts.work_limits import TIME_OPTIONAL_STEP
             from meshpipeline.engines.determinism import note_guard_trip
 
-            note_guard_trip("shell_thick_kept", workspace=ws, rule="MIXED-16", budget_s=float(budget),
-                            extract_s=float(rec.get("extract_s") or 0.0))
+            note_guard_trip("shell_thick_kept", workspace=ws, rule=TIME_OPTIONAL_STEP, by="MIXED-16",
+                            budget_s=float(budget), extract_s=float(rec.get("extract_s") or 0.0))
             raise mr._Stop(ahead)
         if budget <= 0:
             raise mr._Stop(KEPT_SLOW.format(s=0.0))
@@ -621,7 +629,64 @@ def _kept_start(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
         _kept_not(rec, exc)
         return None
     h["budget"] = budget
+    if KEPT_WATCHED:
+        _watch(h, ws)
     return h
+
+
+#: MIXED-29, THE KEPT-SOLID ATTEMPT IS WATCHED FROM ITS START, NOT ONLY ONCE THE ALL-SHELL MESH IS MADE: a thread of
+#: the run reads the attempt's messages as they come and holds its stops while the all-shell mesh is being made -
+#: MIXED-12's guard (wall seconds) and MIXED-25's growth bound stop it at the limit itself, and a finished attempt's
+#: result is taken off its pipe at once (a child whose result is larger than the pipe holds waits there until it is
+#: read). MIXED-26's clock is set once the all-shell mesh is made, and an attempt that finished before then is held
+#: to it on the seconds it took. Before: read only after the all-shell mesh, the 300 s guard was enforced at 890 s on
+#: the tank with a cone roof (cen_s0195) and at 496 s with 517 CPU seconds spent on cen_s0165. False: read only once
+#: the all-shell mesh is made, as before
+KEPT_WATCHED = True
+
+
+def _watch(h: dict, ws: Path) -> None:
+    """MIXED-29: the attempt `h` waited for in a thread of this run (MIXED-12's guard and MIXED-25's growth bound held
+    at once; MIXED-26's clock read from h["clock_s"] once set); its outcome left in h["outcome"] for _kept_finish."""
+    import threading
+
+    def run() -> None:
+        try:
+            h["outcome"] = ("ok", _wait(h, float(h["budget"]), ws, grow_s=GROW_S))
+        except BaseException as exc:  # noqa: BLE001 - handed to _kept_finish
+            h["outcome"] = ("err", exc)
+
+    t = threading.Thread(target=run, name="shell_thick_kept", daemon=True)
+    h["watch"] = t
+    t.start()
+
+
+def _watched(h: dict, ws: Path, clock: float | None):
+    """MIXED-29: the watched attempt's result once the all-shell mesh is made: its clock set (`clock`, None: the
+    all-shell mesh was not made, MIXED-12's guard alone), waited for, and held to that clock when it had already
+    finished; its exception raised here."""
+    from meshpipeline.engines import mixed_run as mr
+
+    if clock is not None:
+        h["clock_s"] = clock
+    h["watch"].join()
+    kind, value = h.get("outcome") or ("err", RuntimeError("the attempt's result was not read"))
+    if kind == "err":
+        raise value
+    took = h.get("done_cpu_s") if h.get("by_cpu") and h.get("done_cpu_s") is not None else h.get("done_s")
+    if clock is not None and took is not None and float(took) > float(clock):
+        from meshpipeline.contracts.work_limits import TIME_OPTIONAL_STEP
+        from meshpipeline.engines.determinism import note_guard_trip
+
+        h["stopped_cpu_s"] = h.get("done_cpu_s")
+        try:
+            note_guard_trip("shell_thick_kept", workspace=ws, rule=TIME_OPTIONAL_STEP, by="MIXED-26",
+                            budget_s=float(clock), wall_s=h.get("done_s"), cpu_s=h.get("done_cpu_s"))
+        except Exception:  # noqa: BLE001 - the record says it all the same
+            pass
+        h["done_s"] = h["done_cpu_s"] = None
+        raise mr._Stop(KEPT_CLOCK.format(s=float(clock), k=float(KEPT_PER_PLAIN)))
+    return value
 
 
 def _kept_not(rec: dict, exc: BaseException) -> None:
@@ -653,7 +718,8 @@ def _kept_finish(ws: Path, h: dict, record: dict, rec: dict, before: dict, *, pl
                 "stopped_cpu_s": h.get("stopped_cpu_s"), "kept": kept}
 
     try:
-        joined, sub = _wait(h, float(h["budget"]), ws, grow_s=GROW_S, clock_s=clock)
+        joined, sub = (_watched(h, ws, clock) if h.get("watch") is not None
+                       else _wait(h, float(h["budget"]), ws, grow_s=GROW_S, clock_s=clock))
         sq = sub.get("solid_quality") or {}
         if sq.get("valid") is False or sq.get("fatal"):
             raise mr._Stop("the solid mesh of the thick regions is not valid")
