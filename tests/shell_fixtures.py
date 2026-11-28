@@ -781,3 +781,19 @@ def ribbed_floor(t: float = 3.5, h: float = 0.5, w: float = 2.0, gap: float = 3.
         shape = _fuse(shape, _box(2.0, y, t, length - 4.0, w, h))
         y += w + gap
     return shape
+
+
+def mitred_frame(a: float = 30.0, t: float = 3.0, length: float = 700.0, width: float = 400.0):
+    """A welded picture frame of closed square tube `a` x `a`, wall `t`, mitred at its four corners, `length` x `width`
+    outside: one closed hollow ring. Its top and bottom faces are `a` apart with the side walls standing between."""
+    outer = _cut(_box(0, 0, 0, length, width, a), _box(a, a, -1, length - 2 * a, width - 2 * a, a + 2))
+    void = _cut(_box(t, t, t, length - 2 * t, width - 2 * t, a - 2 * t),
+                _box(a - t, a - t, -1, length - 2 * (a - t), width - 2 * (a - t), a + 2))
+    return _cut(outer, void)
+
+
+def plate_with_lip(t: float = 2.0, bar: float = 6.0, length: float = 200.0, width: float = 180.0):
+    """A `length` x `width` x `t` panel with a `bar` x `bar` square lip ring round its edge, flush with its underside:
+    a thin plate and a ring of bar, as wide as its outline but only `bar` wide in its metal (SHELL-65)."""
+    ring = _cut(_box(0, 0, 0, length, width, bar), _box(bar, bar, -1, length - 2 * bar, width - 2 * bar, bar + 2))
+    return _fuse(_box(0, 0, 0, length, width, t), ring)

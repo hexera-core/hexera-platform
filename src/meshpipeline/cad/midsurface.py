@@ -1415,10 +1415,50 @@ PLATE_FLAT_SHARE = 0.5
 PLATE_CURVE_WALLS = 2.0
 PLATE_METAL_SHARE = 0.9
 PLATE_METAL_SAMPLES = 7
+#: SHELL-64 (23 Nov): A HOLLOW SECTION IS NOT A WALL ACROSS ITS DEPTH. A closed tube - a square tube of a welded or
+#: mitred frame - has two thin walls top and bottom and two side walls standing between them. Rays fired from its top
+#: face down through a side wall run the whole depth in metal and leave through the bottom face (a fifth of them on a
+#: 30 x 3 mm tube), so the top and bottom faces read as one even wall as thick as the tube is deep, and SHELL-2 made a
+#: mid-plane through the middle of the tube (6 of 12 square-tube frames of the development set: their shell held 5.5
+#: to 7.4 times the part's metal, with 800 to 3,600 open element edges). A pair SHELL-2 calls thin is no wall when a
+#: face of it is also a side of a shell wall under 1 / PAD_STEP_WALLS of its thickness AND its mid-faces are under
+#: PLATE_METAL_SHARE in the metal (SHELL-23's own two tests): the space between its faces is mostly hollow. A step,
+#: a doubler or a land (its middle in metal) is not touched; nor is any pair without a thinner wall on its faces.
+HOLLOW_ACROSS = True
+#: ... read on a HOLLOW_SAMPLES x HOLLOW_SAMPLES grid: a frame's mid-face is a ring of bars a tube wide, which
+#: SHELL-23's 7 x 7 grid can miss (a 700 x 400 mitred frame of 30 mm tube: all its points fell on the side walls)
+HOLLOW_SAMPLES = 48
+HOLLOW_WHY = "its two faces look at each other across a hollow section, not across metal"
 #: the widest place of a mid-face is looked for on a PLATE_WIDTH_SAMPLES grid over its parameters, then closed in on
 #: by PLATE_WIDTH_STEPS halvings of the grid's step (a fixed search: the same answer twice)
 PLATE_WIDTH_SAMPLES = 15
 PLATE_WIDTH_STEPS = 8
+
+
+#: SHELL-65, A THIN WALL IS WIDE IN ITS METAL, NOT ONLY BY ITS OUTLINE: SHELL-2 reads a sheet's width from its outline
+#: (width_of: its box and 4 x area / OUTER perimeter, its holes not counted), so a ring of bar - a 6 x 6 mm lip round a
+#: 200 x 180 mm plate - read as wide as its outline and passed as a thin wall 6 mm thick, and its mid-surface held 29 to
+#: 47% more metal than the part (the plate-with-lip development parts, volume check False). A sheet SHELL-2 calls thin
+#: must also be at least 1 / PLATE_WIDTH_RATIO of its walls wide at its widest place (inscribed_width, SHELL-23's
+#: measure) on some mid-face of it; a face whose area over its whole outline (every hole counted) already reaches that
+#: is wide without the measure (a region holds a circle about that wide), so the measure is paid only on narrow faces.
+THIN_WIDEST = True
+
+
+def wide_somewhere(faces: list, need: float) -> bool:
+    """SHELL-65: some face of `faces` is at least `need` wide at its widest place (own units). A face whose area over
+    its whole outline reaches `need` is wide without inscribed_width; a face that cannot be measured counts wide."""
+    for f in faces:
+        try:
+            per = _length(f)
+            if per > 0 and _area(f) / per >= need:
+                return True
+            if inscribed_width(f) >= need * (1.0 - 1e-9):
+                return True
+        except Exception as exc:  # noqa: BLE001 - read as before SHELL-65
+            logger.debug("shell: a face's widest place could not be read (%s)", exc)
+            return True
+    return False
 
 
 def inscribed_width(face) -> float:
@@ -1467,9 +1507,9 @@ def inscribed_width(face) -> float:
     return 2.0 * max(best, 0.0)
 
 
-def metal_share(face, solid: _Solid) -> float:
-    """SHELL-23: the share of the points read on a mid-face (a PLATE_METAL_SAMPLES grid over its parameters, the
-    ones inside it; its inner point when the grid misses it) that lie in the body's metal."""
+def metal_share(face, solid: _Solid, k: int = PLATE_METAL_SAMPLES) -> float:
+    """SHELL-23: the share of the points read on a mid-face (a k x k grid over its parameters, PLATE_METAL_SAMPLES
+    unless told, the ones inside it; its inner point when the grid misses it) that lie in the body's metal."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepClass import BRepClass_FaceClassifier
     from OCP.gp import gp_Pnt2d
@@ -1478,7 +1518,6 @@ def metal_share(face, solid: _Solid) -> float:
     a = BRepAdaptor_Surface(face, True)
     u0, u1, v0, v1 = a.FirstUParameter(), a.LastUParameter(), a.FirstVParameter(), a.LastVParameter()
     pts = []
-    k = PLATE_METAL_SAMPLES
     if all(math.isfinite(x) for x in (u0, u1, v0, v1)):
         for i in range(k):
             for j in range(k):
@@ -1492,6 +1531,32 @@ def metal_share(face, solid: _Solid) -> float:
     if not pts:
         return 0.0
     return sum(1 for p in pts if solid.inside(p)) / len(pts)
+
+
+def across_hollow(pairs: list, mids: list, metal_of) -> list[int]:
+    """SHELL-64: the shell pairs read across a hollow section - a face of them is also a side of a shell wall under
+    1 / PAD_STEP_WALLS of their thickness and their mid-faces are under PLATE_METAL_SHARE in the metal - made no wall
+    (shell False, why HOLLOW_WHY). `metal_of(pair)` gives the pair's body metal (a _Solid). Returns their indexes."""
+    thinnest: dict[int, float] = {}
+    for pr in pairs:
+        if pr.shell:
+            for k in (pr.a, pr.b):
+                thinnest[k] = min(thinnest.get(k, math.inf), pr.thickness)
+    dropped: list[int] = []
+    for i, pr in enumerate(pairs):
+        if not pr.shell or not any(thinnest.get(k, math.inf) * PAD_STEP_WALLS < pr.thickness * (1.0 - sp.EVEN_SHARE)
+                                   for k in (pr.a, pr.b)):
+            continue
+        faces_i = [mids[k].face for k in pr.mids]
+        area_i = sum(_area(f) for f in faces_i)
+        if area_i <= 0:
+            continue
+        solid = metal_of(pr)
+        if sum(_area(f) * metal_share(f, solid, HOLLOW_SAMPLES) for f in faces_i) >= PLATE_METAL_SHARE * area_i:
+            continue
+        pr.shell, pr.why = False, HOLLOW_WHY
+        dropped.append(i)
+    return dropped
 
 
 def _outer_normal(face) -> np.ndarray | None:
@@ -3433,6 +3498,9 @@ def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float,
     clf = BRepClass3d_SolidClassifier(solid)
     tol = 1e-6 * h
     counts = [0] * len(regions)
+    inside = 0
+    metal_lo = [np.full(3, np.inf) for _ in regions]
+    metal_hi = [np.full(3, -np.inf) for _ in regions]
     for p, k in zip(pts, owner, strict=True):
         work[0] -= 1
         if work[0] < 0:
@@ -3440,6 +3508,7 @@ def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float,
         clf.Perform(gp_Pnt(*map(float, p)), tol)
         if clf.State() != TopAbs_IN:
             continue
+        inside += 1
         gap = np.linalg.norm(np.maximum(np.maximum(wall_lo - p, 0.0), p - wall_hi), axis=1)
         near = [int(j) for j in np.argsort(gap, kind="stable") if gap[j] <= half[j]]
         carried = False
@@ -3454,10 +3523,41 @@ def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float,
             return out
         if not carried:
             counts[int(k)] += 1
+            metal_lo[int(k)] = np.minimum(metal_lo[int(k)], p)
+            metal_hi[int(k)] = np.maximum(metal_hi[int(k)], p)
     cell = (h * mm) ** 3
-    for row, c in zip(out, counts, strict=True):
-        row["volume_mm3"] = _r(c * cell)
+    scale = _metal_scale(solid, grown, inside * cell, mm)
+    for row, c, lo, hi, (flo, fhi) in zip(out, counts, metal_lo, metal_hi, boxes, strict=True):
+        row["volume_mm3"] = _r(c * cell * scale)
+        if c:
+            # MIXED-17: a side of the faces' box thinner than one cell (a flat face's) is told as its metal's
+            ext = np.where(fhi - flo < h, hi - lo + h, fhi - flo)
+            row["size_mm"] = [_r(x * mm) for x in sorted(ext.tolist(), reverse=True)]
     return out
+
+
+#: MIXED-17, A REGION'S METAL IS NEVER MORE THAN THE BODY: SHELL-60 counts each inside grid point as a whole cell of
+#: side h = (grown boxes' volume / THICK_POINTS)^(1/3). Where h passes the wall (cen_r0553: h about 3.5 mm on 2 mm
+#: walls) the points fall on the walls in step with the grid and the count runs over the metal: one region read 59,667
+#: mm3 of a 49,873 mm3 body, "120% of the part's volume". The body's exact volume is known, so the count is scaled to
+#: it: when the grown boxes hold the whole body, the inside points stand for exactly the body's volume (each region
+#: then gets its share of the points times that volume - a ratio, true on average at any h); when they hold part of
+#: it, the inside points never stand for more than the body. Same points, same work: a finer grid would cost cubes.
+#: The told size was the faces' box (pub_0018's one flat annulus face: "60.5 x 60.5 x 2e-07 mm" for 5,123 mm3): a
+#: side of it thinner than one cell is now the side of the cells counted as the region's metal.
+METAL_TRUE = True
+
+
+def _metal_scale(solid, grown: list[tuple], counted_mm3: float, mm: float) -> float:
+    """MIXED-17: the factor the counted cells are scaled by (1.0 when off or unmeasurable)."""
+    if not METAL_TRUE or counted_mm3 <= 0:
+        return 1.0
+    body = _volume(solid) * mm ** 3
+    if body <= 0:
+        return 1.0
+    blo, bhi = _box(solid)
+    whole = any(bool(np.all(lo <= blo) and np.all(hi >= bhi)) for lo, hi in grown)
+    return body / counted_mm3 if whole else min(1.0, body / counted_mm3)
 
 
 #: SHELL-62, A THICK REGION HOLDS METAL: the faces a body's reading calls thick or solid make a thick region only when
@@ -6301,6 +6401,10 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 pass
         t = max(pairs[i].thickness for i in group)
         shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
+        if shell and THIN_WIDEST:
+            # SHELL-65: wide by its outline, and wide somewhere in its metal too (a lip ring is as wide as its bar)
+            clock.check("reading the walls")
+            shell = wide_somewhere(sheet_faces, t / sp.PLATE_WIDTH_RATIO / mm)
         if not shell:
             thick_sheets.append((t, s_i, group, size, own_width, sheet_faces, width))
         for i in group:
@@ -6314,6 +6418,20 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
     for i in sp.laps(pairs):
         pairs[i].shell = True
         pairs[i].why = "a lap: two shell plates stacked, shelled with them"
+    if HOLLOW_ACROSS:
+        # SHELL-64: a thin pair read across a hollow section (a tube's top and bottom faces) is no wall
+        hollow_metal: dict[int, _Solid] = {}
+
+        def _hollow_metal(pr: sp.Pair) -> _Solid:
+            b = body_of[pr.a]
+            if b not in hollow_metal:
+                t_b = min(q.thickness for q in pairs if q.shell and body_of[q.a] == b)
+                hollow_metal[b] = _Solid(solids[b], 1e-3 * t_b / mm, wall=t_b / mm,
+                                         quick=quick_triangles(surface, body_faces_of[b], t_b) <= QUICK_MAX_TRIANGLES)
+            clock.check("reading the walls")
+            return hollow_metal[b]
+
+        across_hollow(pairs, mids, _hollow_metal)
     # SHELL-23: a sheet that is not thin is still a shell when it is plate-like - wide against its wall, not a thick
     # ring, its middle in the metal, and no pad on a thinner wall. Thinnest first: a pad is told by the wall under it
     if EVERY_PLATE:

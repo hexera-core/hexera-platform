@@ -9979,22 +9979,27 @@ def element_offsets(mesh: ShellMesh, mids: dict[str, dict]) -> int:
 
 
 def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0, target: dict | None = None,
-             requirements: dict | None = None) -> tuple[ShellMesh, dict]:
+             requirements: dict | None = None, surface: Path | str | None = None,
+             record: dict | None = None) -> tuple[ShellMesh, dict]:
     """Mesh the mid-surface cad/midsurface wrote into `out_dir`, and write shell_plan.json there. `target`: the
     user's element count (SHMESH-23), met on the built mesh - aimed again once when the first mesh missed it.
     `requirements`: the mesh requirements read from the user's notes (SHMESH-24..26); a global size among them
-    decides the sizes, so a count asked beside it is set aside (and said: applied["count_set_aside"])."""
+    decides the sizes, so a count asked beside it is set aside (and said: applied["count_set_aside"]).
+    `surface`, `record`: another mid-surface and its record (MIXED-13: the trimmed walls of a mixed body, meshed by
+    this same path as a shell-only run); None: the ones cad/midsurface wrote into `out_dir`."""
     from meshpipeline.cad import midsurface as ms
 
     out = Path(out_dir)
-    record = json.loads((out / ms.RECORD_FILE).read_text())
+    if record is None:
+        record = json.loads((out / ms.RECORD_FILE).read_text())
+    brep = Path(surface) if surface is not None else out / ms.SURFACE_FILE
     set_aside = None
     if requirements and ((requirements.get("sizes") or {}).get("global_mm") is not None) and target \
             and int(target.get("elements") or 0) > 0:
         set_aside, target = int(target["elements"]), None
     t_first = time.monotonic()
     try:
-        mesh, applied = mesh_shell(out / ms.SURFACE_FILE, record, mm_per_unit=mm_per_unit, target=target,
+        mesh, applied = mesh_shell(brep, record, mm_per_unit=mm_per_unit, target=target,
                                    requirements=requirements)
     except (ValueError, EOFError) as exc:
         # SHMESH-11e: the closed faces cut at their seams (SHMESH-11) and the mesh failed - meshed again with the
@@ -10004,7 +10009,7 @@ def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0, target: dict | No
         logger.info("shell mesh: failed with the closed faces cut (%s); meshed again whole (SHMESH-11e)", exc)
         _WHOLE_NOW[0] = True
         try:
-            mesh, applied = mesh_shell(out / ms.SURFACE_FILE, record, mm_per_unit=mm_per_unit, target=target,
+            mesh, applied = mesh_shell(brep, record, mm_per_unit=mm_per_unit, target=target,
                                        requirements=requirements)
         except (ValueError, EOFError):
             raise ValueError(str(exc) or type(exc).__name__) from exc
@@ -10025,7 +10030,7 @@ def mesh_run(out_dir: Path | str, *, mm_per_unit: float = 1.0, target: dict | No
         # the closer of the two kept
         corr = float(t.get("correction") or 1.0) * mesh.n_elements / max(float(t.get("planned") or 1), 1.0)
         try:
-            again, applied2 = mesh_shell(out / ms.SURFACE_FILE, record, mm_per_unit=mm_per_unit, target=target,
+            again, applied2 = mesh_shell(brep, record, mm_per_unit=mm_per_unit, target=target,
                                          correction=corr, requirements=requirements)
         except ValueError as exc:
             logger.info("shell mesh: the count was not aimed again (%s)", exc)

@@ -123,18 +123,19 @@ def test_the_latest_word_stands_and_a_later_shell_counts():
 
 
 def test_a_mixed_part_asked_as_a_shell_is_a_shell_and_says_what_is_not_in_it(parts):
-    """A plate with a thick boss, asked for as a shell: a shell, the boss listed as not in it (no Auto shell +
-    solid)."""
+    """A plate with a thick boss, asked for as a shell: a shell, the boss listed as kept as solid elements in the same
+    mesh (MIXED-15: one mixed body MIXED-12 will try to keep whole; before, "not in this shell mesh")."""
     rec, drawn, _ = parts["boss"]
     view = sc.shell_view(_ready(sc.summarise(rec, drawn)), CAD, SHELL)
     assert view["mesh_as"] == "shell"
-    # SHSTAGE-9: first the totals and the way on, then the boss - not in the mesh, never "stays solid"
+    # MIXED-15 (SHSTAGE-9 when the join is not tried): first the totals and what if the join fails, then the boss
     head, row = view["not_shelled"]
     assert head["kind"] == "solid_head" and head["id"] == "" and head["words"] == view["reason"]
-    assert view["reason"].startswith("1 thick region (about 30 x 30 x 30 mm, 26% of the part's volume) is not in this shell mesh.")
+    assert view["reason"].startswith("1 thick region (about 30 x 30 x 30 mm, 26% of the part's volume) is kept as solid elements in the same mesh.")
+    assert view["reason"].endswith("If it cannot be joined to the shell, it is left out and the result says so.")
     assert row["id"] == "S1" and row["kind"] == "solid"
     assert row["words"] == ("A thick region of the part (5 faces, about 30 x 30 x 30 mm, 26% of the part's "
-                            "volume) is not in this shell mesh: it is 30 mm thick or more, too thick for a shell.")
+                            "volume) is kept as solid elements: it is 30 mm thick or more, too thick for a shell.")
     assert row["at_mm"] == pytest.approx([100.0, 50.0, 22.0], abs=0.5)
     assert sc.settle(view)["mesh_as"] == "shell"
 
