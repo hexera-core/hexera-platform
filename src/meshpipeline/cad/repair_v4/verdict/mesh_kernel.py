@@ -26,10 +26,11 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
-from meshpipeline.cad.repair_v4.verdict import mesh_child
+from meshpipeline.cad.repair_v4.verdict import mesh_child, thin_sizing
 from meshpipeline.cad.repair_v4.verdict.mesh_child import (  # noqa: F401 - the package's public names
     ALT_OPTIONS,
     ALT_SIZE_DIVISOR,
@@ -79,9 +80,15 @@ def mesh_gmsh(payload: dict) -> dict:
     if payload.get("timeout_s") is None:
         raise ValueError("mesh_gmsh needs payload['timeout_s']: a child process with no clock can hang the worker")
     timeout_s = float(payload["timeout_s"])
+    # owner decision 2026-11-26: the part's thin walls, measured once per file (thin_sizing.plan_for) and sized in
+    # the child; the measuring time comes out of the member's own clock
+    started = time.monotonic()
+    sizing = thin_sizing.plan_for(str(payload["step"]), min(thin_sizing.MEASURE_TIMEOUT_S, 0.5 * timeout_s))
+    timeout_s = max(1.0, timeout_s - (time.monotonic() - started))
     with tempfile.TemporaryDirectory(prefix="mesh_gmsh_") as tmp:
         payload_path, answer_path = str(Path(tmp, "payload.json")), str(Path(tmp, "answer.json"))
-        Path(payload_path).write_text(json.dumps({"step": str(payload["step"]), "profile": str(payload["profile"])}))
+        Path(payload_path).write_text(json.dumps({"step": str(payload["step"]), "profile": str(payload["profile"]),
+                                                  "sizing": sizing}))
         try:
             proc = subprocess.run(
                 _child_argv(payload_path, answer_path), capture_output=True, text=True, timeout=timeout_s, check=False

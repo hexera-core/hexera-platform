@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Literal
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
-from meshpipeline.cad.repair_v4.verdict import panel
+from meshpipeline.cad.repair_v4.verdict import panel, thin_sizing
 from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
 from meshpipeline.cad.repair_v4.verdict.panel import INFRASTRUCTURE_KIND, Located, MemberResult
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
@@ -52,14 +52,32 @@ def netgen_python() -> str | None:
     return shutil.which("netgen-python")
 
 
-def _run_netgen(step: str, out_msh: str, timeout_s: float) -> dict:
+def netgen_block(sizing: dict) -> dict:
+    """The Netgen-side settings of the local sizing (thin_sizing): close edges, curvature safety, the floor (mm)."""
+    block: dict = {"closeedgefac": thin_sizing.NETGEN_CLOSEEDGEFAC,
+                   "curvaturesafety": thin_sizing.NETGEN_CURVATURESAFETY}
+    if sizing.get("floor_mm"):
+        block["minh"] = float(sizing["floor_mm"])
+    return block
+
+
+def _write_sizing(step: str, work: Path, timeout_s: float) -> str:
+    """The part's thin-wall plan (measured once per file, thin_sizing.plan_for) with the Netgen block, as a JSON file
+    the script reads."""
+    sizing = thin_sizing.plan_for(step, min(thin_sizing.MEASURE_TIMEOUT_S, 0.5 * timeout_s))
+    path = work / "sizing.json"
+    path.write_text(json.dumps({**sizing, "netgen": netgen_block(sizing)}, sort_keys=True))
+    return str(path)
+
+
+def _run_netgen(step: str, out_msh: str, timeout_s: float, sizing_path: str | None = None) -> dict:
     glue = "glue" if GLUE_TOUCHING_SOLIDS else "noglue"
     python = netgen_python()
     if python is None:
         return {"ok": False, "stage": "unavailable", "error": "no netgen interpreter (mesh image only)"}
     try:
         proc = subprocess.run(
-            [python, str(SCRIPT), step, out_msh, repr(MAXH_DIVISOR), glue],
+            [python, str(SCRIPT), step, out_msh, repr(MAXH_DIVISOR), glue, *([sizing_path] if sizing_path else [])],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -168,7 +186,10 @@ def _mesh_netgen(payload: dict) -> dict:
         # of up to 50). Every multi-root file is handed over as ONE BREP compound of all its roots, so Netgen judges
         # the whole part; a single-root file goes in exactly as before.
         whole = _all_roots_brep(step, work) if _root_count(step) > 1 else None
-        record = _run_netgen(whole or step, msh, float(payload["timeout_s"]))
+        # owner decision 2026-11-26: thin walls sized (thin_sizing); the measuring time comes out of Netgen's clock
+        sizing_path = _write_sizing(step, work, float(payload["timeout_s"]))
+        budget = max(1.0, float(payload["timeout_s"]) - (time.monotonic() - started))
+        record = _run_netgen(whole or step, msh, budget, sizing_path)
         if whole is not None:
             record = {**record, "read_via": "all_roots_brep"}
         elif _read_no_solids(record):
@@ -179,7 +200,7 @@ def _mesh_netgen(payload: dict) -> dict:
             brep = _all_roots_brep(str(payload["step"]), work)
             remaining = float(payload["timeout_s"]) - (time.monotonic() - started)
             if brep is not None and remaining > 1.0:
-                retry = _run_netgen(brep, msh, remaining)
+                retry = _run_netgen(brep, msh, remaining, sizing_path)
                 record = {**retry, "read_via": "all_roots_brep", "first_root_read": record}
         if not record.get("ok"):
             return record
@@ -235,6 +256,7 @@ class NetgenOCC:
             "versions": dict(sorted(NETGEN_PIN.items())),
             "glue": GLUE_TOUCHING_SOLIDS,
             "sizing": {"maxh_divisor": MAXH_DIVISOR, "maxh": "diagonal / maxh_divisor"},
+            "local_sizing": thin_sizing.config(),
         }
 
     def run(self, pool: WorkerPool, step_path: str, *, timeout_s: float) -> MemberResult:
