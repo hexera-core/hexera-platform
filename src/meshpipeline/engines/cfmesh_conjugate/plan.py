@@ -197,10 +197,35 @@ def read_plan(workspace) -> ConjugatePlan:
     data = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{PLAN_NAME} is not a JSON object")
-    missing = [k for k in ("background_cell_m", "expect_fluid_volume_m3", "narrowest_m")
+    # `volume_tol` IS ON THIS LIST BECAUSE THE REVIEWER DIVIDES BY IT. `finalize.quality_of`
+    # publishes `coolant_error_over_tol` as `coolant_error_pct / coolant_tol_pct`, and that key is
+    # the one GATING metric in this engine's whole review plan. A ratio with no denominator has no
+    # value, so `quality_of` correctly omits it - and an omitted gating key ends the review with
+    # `reviewer_evidence_missing`, which is NOT rerunnable, on a mesh that passed every gate.
+    # finalize.py says it one block below: "a gating key missing from the quality block fails
+    # closed".
+    #
+    # SO THE DENOMINATOR IS REFUSED HERE RATHER THAN FAKED THERE. A planner-built plan cannot
+    # reach this: `_tolerance` floors it at `DEFAULT_VOLUME_TOL`. A hand-written or legacy plan
+    # can, and `volume_tol: 0` was accepted silently - it was not on this list - which costs a
+    # finished mesh its verdict rather than failing in the second it takes to read the plan.
+    #
+    # AND A ZERO IS NOT A TOLERANCE ANYWAY. The bar exists because a staircased coolant volume
+    # cannot match its CAD volume exactly: `_tolerance` is the measured staircase error for the
+    # cells-across used, with a margin. "No error at all is acceptable" is not a statement any
+    # mesh of a curved passage can satisfy, so a plan asking for it is a plan that was mis-built.
+    missing = [k for k in ("background_cell_m", "expect_fluid_volume_m3", "narrowest_m",
+                           "volume_tol")
                if data.get(k) is None]
     if missing:
         raise ValueError(f"{PLAN_NAME} is missing {missing}, which cannot be defaulted")
+    if float(data["volume_tol"]) <= 0.0:
+        raise ValueError(
+            f"{PLAN_NAME}: volume_tol is {data['volume_tol']!r}, and the coolant tolerance is "
+            "what the review divides the coolant error by - a zero or negative one leaves the "
+            "one gating metric of this engine's review plan with no value, which ends the review "
+            "as reviewer_evidence_missing on a mesh that passed every gate. Give the tolerance "
+            "the planner's own figure (cfmesh_conjugate/plan._tolerance) or a positive fraction.")
     known = {f for f in ConjugatePlan.__dataclass_fields__}
     out = {k: v for k, v in data.items() if k in known}
     if out.get("port_walls") is not None:
