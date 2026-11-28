@@ -22,7 +22,7 @@ LIVE_POSTURE = "needs.target.outputs.crs_v3 == 'live' && 'live' || ''"
 CARRIED = "needs.target.outputs.crs_v3 != '' && needs.target.outputs.crs_v3 || ''"
 # A COUNT, not a posture: the tournament's K. Shared dev (crs_v3=live) states 3 - the K the eval
 # measures - because K=1 rehearses one candidate and is a tournament in name only. Unstated
-# anywhere else, so shadow slugs and production keep the code default (1).
+# anywhere else, so shadow slugs keep the code default (1).
 K_LIVE = "needs.target.outputs.crs_v3 == 'live' && '3' || ''"
 TOURNAMENT_K_LIVE = "3"
 
@@ -65,7 +65,7 @@ FLAGS: dict[str, tuple[str, str]] = {
     "CAD_REPAIR_STANDALONE_JOBS": ("cad-repair-standalone-jobs", LIVE_POSTURE),
     # DEV DIAGNOSTICS (lane D): the investigation trace - per-turn JSONL beside the job's
     # artifacts and a per-region "why no package" table in the report. A boolean, on only where
-    # crs_v3 is live (shared dev, crsv3), never in production.
+    # crs_v3 is live (shared dev, production, crsv3).
     "CAD_REPAIR_INVESTIGATION_TRACE": ("cad-repair-investigation-trace", LIVE_ONLY),
 }
 
@@ -134,7 +134,7 @@ def _pick(tmp_path: Path, **env: str) -> dict[str, str]:
     return parsed
 
 
-def test_crs_v3_is_one_switch_and_empty_on_prod(tmp_path):
+def test_crs_v3_is_one_switch_and_live_on_prod(tmp_path):
     wf = _text(".github/workflows/deploy.yml")
     crs = _inputs()["crs_v3"]
     assert crs["type"] == "choice"
@@ -157,13 +157,13 @@ def test_crs_v3_is_one_switch_and_empty_on_prod(tmp_path):
     merge = _pick(tmp_path, GITHUB_REF="refs/heads/main", GITHUB_EVENT_NAME="push")
     assert merge["deployment_id"] == "dev"
     assert merge.get("crs_v3") == "live"
-    # prod: stated empty, permanently
+    # prod: `live` as committed config too, whatever the dispatch asked for
     prod = _pick(tmp_path, GITHUB_REF="refs/tags/v9.9.9", GITHUB_EVENT_NAME="push",
-                 DISPATCH_CRS_V3="live")
+                 DISPATCH_CRS_V3="off")
     assert prod["deployment_id"] == "prod"
-    assert prod.get("crs_v3") == ""
-    # exactly one target still states it empty: production
-    assert len(re.findall(r'echo "crs_v3="', wf)) == 1
+    assert prod.get("crs_v3") == "live"
+    # no target states it empty any more: personal slugs leave it to the input
+    assert len(re.findall(r'echo "crs_v3="', wf)) == 0
 
     for env, (_, expr) in FLAGS.items():
         assert "prod" not in expr, env
@@ -194,14 +194,14 @@ def test_every_flag_is_a_registered_setting():
 
 
 def test_the_postures_the_set_takes_on_each_target(tmp_path):
-    """Production (crs_v3 empty) states NOTHING, so every flag reads its in-code default (off);
-    shared dev's committed `live` turns the whole set on together; shadow turns on only the flags
-    that have a shadow meaning."""
+    """Production and shared dev's committed `live` turn the whole set on together; shadow turns
+    on only the flags that have a shadow meaning."""
     prod = _pick(tmp_path, GITHUB_REF="refs/tags/v9.9.9", GITHUB_EVENT_NAME="push",
-                 DISPATCH_CRS_V3="live")["crs_v3"]
+                 DISPATCH_CRS_V3="off")["crs_v3"]
     dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")["crs_v3"]
     for env, (_, expr) in FLAGS.items():
-        assert _VALUE[expr](prod) == "", f"{env} would be stated on production"
+        assert _VALUE[expr](prod) in ("live", "true", TOURNAMENT_K_LIVE), \
+            f"{env} is not on in production"
         assert _VALUE[expr](dev) in ("live", "true", TOURNAMENT_K_LIVE), \
             f"{env} is not on in shared dev"
     shadow_on = {env for env, (_, expr) in FLAGS.items() if _VALUE[expr]("shadow")}
@@ -240,7 +240,7 @@ def test_input_budget_still_holds():
     assert len(_inputs()) <= 25
 
 
-# --- Task 28: the posture. Shared dev runs the v3 set as one unit; production stays off. -------
+# --- Task 28: the posture. Shared dev and production run the v3 set as one unit. --------------
 
 
 def test_the_v3_flags_derive_only_from_the_one_switch():
@@ -279,7 +279,7 @@ def test_an_exported_posture_actually_reaches_the_settings_module(monkeypatch, n
 
 def test_shared_dev_runs_the_tournament_the_eval_measured(tmp_path):
     """K=1 rehearses one candidate: a live tournament with an unstated K is no tournament. Shared
-    dev states the eval's K; shadow slugs and production state nothing (the code default, 1)."""
+    dev and production state the eval's K; shadow slugs state nothing (the code default, 1)."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -291,9 +291,9 @@ def test_shared_dev_runs_the_tournament_the_eval_measured(tmp_path):
     expr = FLAGS["CAD_REPAIR_TOURNAMENT_K"][1]
     dev = _pick(tmp_path, DISPATCH_SLUG="", DISPATCH_CRS_V3="off")["crs_v3"]
     prod = _pick(tmp_path, GITHUB_REF="refs/tags/v9.9.9", GITHUB_EVENT_NAME="push",
-                 DISPATCH_CRS_V3="live")["crs_v3"]
+                 DISPATCH_CRS_V3="off")["crs_v3"]
     assert _VALUE[expr](dev) == TOURNAMENT_K_LIVE
-    assert _VALUE[expr](prod) == ""
+    assert _VALUE[expr](prod) == TOURNAMENT_K_LIVE
     assert _VALUE[expr]("shadow") == ""
 
 

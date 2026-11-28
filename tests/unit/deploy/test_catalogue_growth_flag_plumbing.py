@@ -5,7 +5,7 @@ NEW = {"CAD_REPAIR_FILL_NONPLANAR_HOLES": "cad-repair-fill-nonplanar-holes",
        "CAD_REPAIR_HEAL_SELF_INTERSECTIONS": "cad-repair-heal-self-intersections",
        "CAD_REPAIR_FIX_SMALL_FACES": "cad-repair-fix-small-faces"}
 
-DEV_OR_OPT_IN = "(needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair)"
+DEV_OR_OPT_IN = "(needs.target.outputs.deployment_id == 'prod' || needs.target.outputs.deployment_id == 'dev' || inputs.cad_repair)"
 
 def _text(rel): return (ROOT / rel).read_text(encoding="utf-8")
 

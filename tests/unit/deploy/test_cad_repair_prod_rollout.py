@@ -34,17 +34,20 @@ def test_production_releases_enable_core_repair_and_review_by_default():
     )
 
 
-def test_production_default_does_not_enable_geometry_invention_flags():
-    for name in GEOMETRY_FLAGS + ("CAD_REPAIR_MAX_OPS", "CAD_REPAIR_TIMEOUT_S", "CAD_REPAIR_LLM_PLANNER"):
-        assert "'prod'" not in _env_line(name), name
+def test_production_releases_enable_every_crs_capability_like_shared_dev():
+    for name in GEOMETRY_FLAGS:
+        assert _env_line(name) == f"{name}: ${{{{ ({PROD} || {SHARED_DEV} || inputs.cad_repair) && 'true' || '' }}}}"
+    for name, value in (("CAD_REPAIR_MAX_OPS", "12"), ("CAD_REPAIR_TIMEOUT_S", "420")):
+        assert f"({PROD} || {SHARED_DEV} || inputs.cad_repair) && '{value}'" in _env_line(name), name
+    assert f"({PROD} || {SHARED_DEV}) && 'live'" in _env_line("CAD_REPAIR_LLM_PLANNER")
 
 
 def test_shared_dev_enables_every_crs_capability_without_a_dispatch_input():
     # A merge to main carries no inputs, so shared dev must key on the target, not the tick.
     for name in GEOMETRY_FLAGS:
-        assert _env_line(name) == f"{name}: ${{{{ ({SHARED_DEV} || inputs.cad_repair) && 'true' || '' }}}}"
+        assert SHARED_DEV in _env_line(name), name
     # Shared dev runs the planner live; a dispatch's own posture still wins over it.
     assert _env_line("CAD_REPAIR_LLM_PLANNER") == (
         "CAD_REPAIR_LLM_PLANNER: ${{ inputs.llm_planner != 'off' && inputs.llm_planner || "
-        f"{SHARED_DEV} && 'live' || '' }}}}"
+        f"({PROD} || {SHARED_DEV}) && 'live' || '' }}}}"
     )
