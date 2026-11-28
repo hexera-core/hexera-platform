@@ -666,21 +666,37 @@ def _a_cfd_workspace(root: Path) -> Path:
     return ws
 
 
-def _returned_through(module, ws: Path, engine: str) -> dict:
-    module.engine_runners = lambda: {engine: lambda w, *, bashrc, timeout: {
-        "rc": 0, "timed_out": False, "cells": 123_456, "log_tail": "Mesh OK."}}
+def _returned_through(monkeypatch, module, ws: Path, engine: str) -> dict:
+    """Run one engine's return through `module`, with a stub runner.
+
+    THROUGH monkeypatch AND NOT BY ASSIGNMENT. `module` here is the REAL
+    `engines.dispatch` on one of the two calls below, so a bare
+    `module.engine_runners = ...` replaced the live registry for the rest of the
+    process: this is parametrised over three engines, the last one wins, and
+    every later test in the session then saw a dispatch that knew one engine.
+    It cost `tests/unit/flow/test_cloudrun_integration.py::
+    test_engine_dispatch_covers_every_engine_and_rejects_unknown` - which reads
+    `set(engine_runners()) == set(engine_names())` and got {'gmsh'} - and that
+    failure only ever appeared when the whole suite ran, never on the file
+    alone, which is what made it look like branch debt rather than a leak.
+    """
+    monkeypatch.setattr(module, "engine_runners",
+                        lambda: {engine: lambda w, *, bashrc, timeout: {
+                            "rc": 0, "timed_out": False, "cells": 123_456,
+                            "log_tail": "Mesh OK."}})
     return module.run_engine_local(ws, engine=engine, timeout=600)
 
 
 @pytest.mark.parametrize("engine", ["cfmesh", "snappy_multiregion", "gmsh"])
-def test_the_return_watch_changes_nothing_else_a_non_conjugate_run_returns(engine, tmp_path):
+def test_the_return_watch_changes_nothing_else_a_non_conjugate_run_returns(engine, tmp_path,
+                                                                            monkeypatch):
     """EXECUTED, both sides. `dispatch.run_engine_local` is shared by every engine, so the watch
     around the return runs for CFD, thermal and FEA too. What it may do is add its own phase log;
     what it may not do is change the verdict, the cell count, the scope decision or the largest
     file the extractor sizes itself from."""
     base = _module_at(PRE_FIX, DISPATCH, f"_head_dispatch_{engine}")
-    now = _returned_through(D, _a_cfd_workspace(tmp_path / "now"), engine)
-    was = _returned_through(base, _a_cfd_workspace(tmp_path / "was"), engine)
+    now = _returned_through(monkeypatch, D, _a_cfd_workspace(tmp_path / "now"), engine)
+    was = _returned_through(monkeypatch, base, _a_cfd_workspace(tmp_path / "was"), engine)
 
     for key in ("rc", "timed_out", "cells", "log_tail", "return_scope"):
         assert now.get(key) == was.get(key), (engine, key, now.get(key), was.get(key))
