@@ -633,7 +633,15 @@ def confirmed_port_details(session_id) -> dict[str, dict]:
             continue
         name = str(q.get("name") or "").strip()
         role = str(q.get("type") or q.get("role") or "").strip().lower()
-        if not name or role not in ("inlet", "outlet"):
+        # `opening` TOO, AND THAT IS THE WHOLE POINT OF THIS FUNCTION. This exists because the
+        # submission's patch list is produced by a MODEL asked in prose to copy the numbers
+        # across, and run B dropped them - "built correctly and was then refused ... 29 minutes
+        # of meshing, no retry". An `opening` is exactly as droppable as an inlet, and since
+        # 2026-11-27 it is a role a customer can actually send: session 11091006's card offered
+        # mouth_1 and mouth_2 as `opening` and Proceed returned HTTP 422 until the API learned
+        # the word. A repair that only covers inlet and outlet leaves the role this part's
+        # severed pair is DELIVERED under with no numbers to restore.
+        if not name or role not in ("inlet", "outlet", "opening"):
             continue
         have = {k: q[k] for k in PORT_DETAIL_FIELDS
                 if q.get(k) is not None and q.get(k) != []}
@@ -675,8 +683,13 @@ def restore_port_details(patches, confirmed: dict) -> tuple[list, list[str]]:
         name = str(p.get("name") or "").strip()
         role = str(p.get("type") or p.get("role") or "").strip().lower()
         have = confirmed.get(name) or {}
+        # ...and gives them back for an `opening` as well. Without this the capture above has
+        # nowhere to land and `near_mm` never reaches `port_declaration.json`, which is the file
+        # the carve binds from (agents/builder/workspace.py writes it verbatim from the model's
+        # own `intake_patches`, not from `patches_from`).
         missing = {k: v for k, v in have.items()
-                   if role in ("inlet", "outlet") and (p.get(k) is None or p.get(k) == [])}
+                   if role in ("inlet", "outlet", "opening")
+                   and (p.get(k) is None or p.get(k) == [])}
         if missing:
             rows.append({**p, **missing})
             restored.append(name)

@@ -397,9 +397,27 @@ def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
         return None, ""
     #: Only a port can be matched by position. A declared `wall` carries no `near_mm` and names no
     #: mouth; it is the outer surface, and `declared_port_names` is what reads it.
+    # `opening` IS A PORT HERE, AND LEAVING IT OUT COST A DELIVERY. A mouth whose direction
+    # nobody declared is still a mouth the customer NAMED and POINTED AT, and its `near_mm` is
+    # the only thing that ties their name to a hole. Dropped, this returns (None, "") and
+    # `port_rows` falls through to its own index-based naming over `rec["ports"]` - which is
+    # sorted largest passage first, then widest hole first.
+    #
+    # WHAT THAT COST, measured on job a9fa0aba. The card named the 8 mm bore at
+    # (99.9, 54.7, 43.3) `mouth_1` and marked the 11.8 mm lid bore "not an opening". The carve's
+    # own order put the 11.8 mm bore at index 0, so it minted `mouth_1` onto the hole the
+    # customer had just excluded and shifted both real mouths by one. The run meshed for 161
+    # minutes and was refused with "The mesh has no boundary called 'mouth_1'".
+    #
+    # AND THE REFUSAL WAS LUCK, which is the part that matters. That bore is CAPPED, so topoSet
+    # found no faces and createPatch deleted the patch - which is the only reason the mismatch
+    # became visible. Had the lid port been open, the same run would have DELIVERED a mesh whose
+    # `mouth_1` was the wrong hole and the gate would have passed it: the contract compares
+    # names, and the name was there. The delivered `mouth_2` of that run does sit on the bore the
+    # customer called `mouth_1`.
     ports = [d for d in declared
              if len(d.get("near_mm") or []) == 3
-             and str(d.get("type") or "").strip().lower() in ("inlet", "outlet")]
+             and str(d.get("type") or "").strip().lower() in ("inlet", "outlet", "opening")]
     if not ports:
         return None, ""
     rows: list = [None] * len(stubs)
@@ -424,11 +442,35 @@ def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
             return None, "a declared port has no name"
         used.add(best)
         rows[best] = (name, str(d.get("type") or "").strip().lower())
-    # every mouth the declaration did not claim: cut as a wall, under the name port_rows would
-    # have given it anyway, so an undeclared mouth reads the same whether or not a port was named
+    # EVERY MOUTH THE DECLARATION DID NOT CLAIM: cut as a wall, under the name `port_rows` would
+    # have given it anyway.
+    #
+    # STILL A WALL, AND THAT WAS A DECISION. It was argued that the leftover should take the role
+    # its own shape earns - `wall` when `Stub.is_sealed`, `opening` otherwise - on the grounds
+    # that `wall` quietly seals a hole the mesh may need open. That argument is about an
+    # openings-only declaration, where every mouth is an opening and none should become a wall.
+    # Here the declaration has named its ports and a spare mouth is a hole the customer did not
+    # ask for, so `wall` delivers exactly the ports promised and nothing else. Three tests pin
+    # it deliberately (test_a_cut_port_wears_the_name_the_user_approved), on this part it reads
+    # the same either way because the one leftover is the capped lid bore, and there is no
+    # measurement behind the change - so it is not made.
+    #
+    # AND NOT UNDER A NAME THE CUSTOMER ALREADY USED, which `mouth_{i + 1}` cannot promise once
+    # the declaration binds by position. On job a9fa0aba the customer's `mouth_1` binds to stub 1
+    # and the unclaimed capped bore is stub 0, so the old rule minted a SECOND `mouth_1` onto it:
+    # two patches, one name, which is worse than the mismatch this function was fixed to stop. The
+    # index is still the default, so a run where nothing collides reads exactly as it always did.
+    # `rows` still holds a None for every unclaimed mouth at this point, so the names are
+    # read off the filled entries only.
+    taken = {r[0] for r in rows if r}
     for i in range(len(stubs)):
         if rows[i] is None:
-            rows[i] = (f"mouth_{i + 1}", "wall")
+            k = i + 1
+            while f"mouth_{k}" in taken:
+                k += 1
+            spare = f"mouth_{k}"
+            taken.add(spare)
+            rows[i] = (spare, "wall")
     told = ", ".join(f"{n} ({r})" for n, r in rows if r in ("inlet", "outlet"))
     spare = sum(1 for _n, r in rows if r == "wall")
     return rows, ("the ports are cut under the names declared at intake, matched to the mouths by "
@@ -538,7 +580,22 @@ def sealed_rows(stubs: list, rows: list | None) -> str:
         if not isinstance(row, dict):
             continue
         role = str(row.get("type") or "").strip().lower()
-        if role not in ("inlet", "outlet") or not st.is_sealed:
+        # AN `opening` TOO - BUT ONLY ONE A DECLARATION BOUND. Once `declared_for` can bind an
+        # `opening`, it can bind one to a capped mouth, which is the 161-minute refusal this
+        # check exists to price before the machine is paid for: "a patch cut on one comes back
+        # with no faces at all, so createPatch deletes it and the finished mesh is refused for a
+        # boundary it does not carry".
+        #
+        # AND NOT THE ENGINE'S OWN DEFAULT, which is where a first version of this went wrong.
+        # With nothing declared, `port_rows` gives EVERY mouth the role `opening` - so refusing
+        # on the word alone refused a run in which the customer had promised nothing at all.
+        # `test_nothing_named_is_nothing_refused` is that rule, and it is right: a name the
+        # engine minted for itself is not in the patch contract, so nothing downstream can be
+        # refused for its absence. An inlet or an outlet stays refused either way, declared or
+        # invented, because `plan.ports_from` reads those roles back out and the flowable gate
+        # then holds the run to a port the run invented.
+        asked = role in ("inlet", "outlet") or (role == "opening" and bool(row.get("declared")))
+        if not asked or not st.is_sealed:
             continue
         where = ", ".join(f"{v * 1000:.1f}" for v in st.centroid)
         bad.append(f"the {role} {row.get('name')} is to be cut on the "
@@ -614,8 +671,14 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
     """
     rows = []
     for k, s in enumerate(stubs):
+        # WHETHER A DECLARATION PUT THIS ROLE HERE, which `sealed_rows` needs and cannot infer.
+        # A leftover `declared_for` filled in for an unclaimed mouth rides in `named` too, but a
+        # sealed one of those is a `wall` and a `wall` is never refused, so the flag is safe to
+        # set for the whole branch.
+        from_declaration = False
         if named is not None and k < len(named):
             name, role = named[k][0], named[k][1]
+            from_declaration = True
         elif not roles:
             # "opening" is not in ROLE_TO_OF_TYPE, and `render_port_patch_dicts` falls back to
             # OpenFOAM type `patch` for a role it does not know - which is the unassigned shape
@@ -630,7 +693,8 @@ def port_rows(stubs: list, *, inlet: str = "coolant_in",
                           ("wall", f"mouth_{k + 1}"))
         rows.append({"name": name, "type": role, "face": s.face,
                      "centre_m": tuple(float(v) for v in s.crossing),
-                     "diameter_m": 2.0 * float(s.radius)})
+                     "diameter_m": 2.0 * float(s.radius),
+                     "declared": from_declaration})
     if len(stubs) < 2:
         return rows, (f"{len(stubs)} mouth(s) can be opened to a block face, and a solve needs "
                       "two: one to be fed through and one to leave by")
