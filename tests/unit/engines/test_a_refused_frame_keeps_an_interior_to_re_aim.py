@@ -36,8 +36,22 @@ def grid():
                         spacing=(CELL, CELL, CELL)).cast_to_unstructured_grid()
 
 
-def _cut(name: str, *, shows: bool, axis: int = 0) -> dict:
-    """One cut across `axis`, with a whole frame and a zoom frame that did or did not answer."""
+#: THE WALL A PICTURE HAS TO SHOW, in pixels, over this fixture's 4 px drawn cell.
+#: `picture_structure.WALL_CELLS_MIN` is 2.0 cells, and 30 px is what job 40e4e578's
+#: through_the_plate zoom actually measured - 7.5 cells of metal between its passages.
+WALL_PX = 30.0
+
+
+def _cut(name: str, *, shows: bool, axis: int = 0, wall_px: float | None = None) -> dict:
+    """One cut across `axis`, with a whole frame and a zoom that did or did not ANSWER.
+
+    "ANSWERED" IS NOT `shows_structure`, AND THIS FIXTURE USED TO SAY IT WAS. What discharges a
+    region is `review_session.ResolvedCut.counts_cells`, and that ends at
+    `wall_in_cells(bare_run_min_px, drawn_cell_px) >= WALL_CELLS_MIN` - so a frame can show a
+    perfectly regular structure and contain no metal at all, which is precisely what job
+    40e4e578's across_the_flow zoom did: shows_structure True, bare_run_min_px 0.0. Pass
+    `wall_px=0.0` with `shows=True` for that case.
+    """
     mid = SPAN / 2.0
     normal = [0.0, 0.0, 0.0]
     normal[axis] = 1.0
@@ -50,7 +64,10 @@ def _cut(name: str, *, shows: bool, axis: int = 0) -> dict:
         "frames": [
             {"scope": "whole", "window_m": [SPAN, SPAN], "centre_m": [mid, mid]},
             {"scope": "zoom", "window_m": [CELL * 8, CELL * 8], "centre_m": [mid, mid],
-             "feature_m": CELL, "content": {"shows_structure": shows}},
+             "feature_m": CELL, "feature_pixels": 4,
+             "content": {"shows_structure": shows,
+                         "bare_run_min_px": (WALL_PX if wall_px is None and shows
+                                             else float(wall_px or 0.0))}},
         ],
     }
 
@@ -104,14 +121,35 @@ def test_a_slab_says_it_is_a_slab(grid, tmp_path):
 
 # ----------------------------------------------------------- what must NOT change behaviour
 
-def test_a_region_whose_frame_answered_still_gives_the_interior_up(grid, tmp_path):
-    """The picture IS the evidence then, and the interior is dead weight. This is the old path."""
+def test_a_region_whose_frame_answered_still_carries_a_slab(grid, tmp_path):
+    """IT USED TO GIVE THE INTERIOR UP ENTIRELY HERE, and that was the remaining hole.
+
+    The reasoning for deleting it was sound as far as it went: the picture IS the evidence when a
+    frame answered, so the interior is dead weight. What it missed is that the picture only has to
+    convince the HOME side, and the home side is not the one that decided the region was
+    showable. `spec._cuts_that_can_be_shown` names a region unless the PRODUCER vetoed it and says
+    so outright - "a cut it did NOT refuse may still be refused by the home side's own measurement
+    of its own copy of the PNG; that stays where it is, and this does not try to predict it" - and
+    the home side then applies five further floors. `review_requires_the_interior` is True for this
+    engine, so such an obligation is never waived, and `expand_region_targets` has nothing to fall
+    back on once the file is gone: the review ends [EXPECTED_TARGET_MISSING] before the model is
+    asked anything, which is what happened to four delivered meshes.
+
+    So a dropped interior now always leaves a slab at every declared plane. The whole interior
+    still does not travel - that is the point of the ceiling - but something at every plane does.
+    It is bounded by `cap` like everything else here, and `_reduce_to_review_slabs` still refuses
+    and lets the caller unlink when even the slabs will not fit; `test_a_slab_that_still_cannot_
+    be_opened_is_refused_and_said` pins that.
+    """
     src = _volume(grid, tmp_path)
+    before = src.stat().st_size
     out: dict = {"rendered": 2, "usable": 1}
-    N._drop_cut_volume(src, out, ceiling=src.stat().st_size // 2, mesh=grid,
+    N._drop_cut_volume(src, out, ceiling=before // 2, mesh=grid,
                        cuts=[_cut("across_the_flow", shows=True)])
-    assert not src.exists()
-    assert "volume_dropped" in out and "volume_reduced" not in out
+    assert src.is_file(), "the answered plane was left with nothing to cut"
+    assert src.stat().st_size < before, "the whole interior must still not travel"
+    assert "volume_reduced" in out and "volume_dropped" not in out
+    assert "across_the_flow" in out["volume_reduced"]
 
 
 def test_an_interior_inside_the_ceiling_is_untouched(grid, tmp_path):
@@ -149,11 +187,41 @@ def test_no_mesh_in_hand_behaves_exactly_as_before(grid, tmp_path):
 # --------------------------------------------------------------------------- which planes
 
 def test_only_the_unanswered_planes_are_kept(grid, tmp_path):
-    """A cut that answered needs no cells; carrying them would spend the ceiling on nothing."""
+    """A cut that answered needs no cells; carrying them would spend the ceiling on nothing.
+
+    This is `_refused_planes` alone. Note that `_reduce_to_review_slabs` now slabs every DECLARED
+    plane after these, for the reason in `_all_declared_planes` - the obligation is built by a
+    weaker test than the one that discharges it. This test is about which planes are provably
+    unanswered, which is still the set that gets a slab first.
+    """
     answered = _cut("along_the_flow", shows=True, axis=1)
     refused = _cut("across_the_flow", shows=False, axis=0)
     planes = N._refused_planes([answered, refused])
     assert [c["name"] for c, _f, _cell in planes] == ["across_the_flow"]
+
+
+def test_a_frame_that_shows_structure_with_no_metal_is_not_answered(grid, tmp_path):
+    """THE CASE THIS FIXTURE COULD NOT EXPRESS, and the one that cost four deliveries. Job
+    40e4e578's across_the_flow zoom: shows_structure True, bare_run_min_px 0.0, and the reader's
+    own `counts_cells` False. A picture with no wall in it is not a picture of a wall."""
+    no_metal = _cut("across_the_flow", shows=True, wall_px=0.0, axis=0)
+    assert [c["name"] for c, _f, _cell in N._refused_planes([no_metal])] == ["across_the_flow"]
+
+
+def test_every_declared_plane_gets_a_slab_when_the_interior_is_dropped(grid, tmp_path):
+    """Even the plane whose picture answered. `spec._cuts_that_can_be_shown` names a region
+    unless the PRODUCER vetoed it and says outright that "a cut it did NOT refuse may still be
+    refused by the home side's own measurement"; the home side then applies five more floors. So
+    a plane this engine thinks is fine can still be an obligation nothing can discharge, and
+    `review_requires_the_interior` is True so the obligation is never waived."""
+    src = _volume(grid, tmp_path)
+    out: dict = {"usable": 2}
+    N._drop_cut_volume(src, out, ceiling=src.stat().st_size // 2, mesh=grid,
+                       cuts=[_cut("across_the_flow", shows=True, axis=0),
+                             _cut("along_the_flow", shows=True, axis=1)])
+    assert src.is_file(), "a dropped interior left nothing at either declared plane"
+    said = out["volume_reduced"]
+    assert "across_the_flow" in said and "along_the_flow" in said
 
 
 def test_both_unanswered_planes_travel(grid, tmp_path):

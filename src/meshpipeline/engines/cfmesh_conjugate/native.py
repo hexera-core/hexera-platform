@@ -1357,6 +1357,23 @@ REVIEW_SLAB_CELLS = 4
 SLAB_FALLBACK_WINDOW_FRACTION = 200.0
 
 
+def _slab_cell_m(zoom: dict, whole: dict) -> float:
+    """The cell a slab's thickness is counted in, or 0.0 when there is nothing to count.
+
+    The planned cell off the zoom, and when the producer did not state one, a cell-sized guess of
+    last resort off the whole frame's window - see `SLAB_FALLBACK_WINDOW_FRACTION`. Shared by
+    `_refused_planes` and `_all_declared_planes` so the two cannot disagree about how thick a slab
+    at the same plane should be.
+    """
+    cell = float(zoom.get("feature_m") or 0.0)
+    if cell > 0.0:
+        return cell
+    win = list(whole.get("window_m") or [])
+    if len(win) != 2:
+        return 0.0
+    return min(float(win[0]), float(win[1])) / SLAB_FALLBACK_WINDOW_FRACTION
+
+
 def _slab_box(cut: dict, frame: dict, *, thickness_m: float) -> list[float] | None:
     """One cut's plane as a box: the whole frame in-plane, a few cells thick along the normal."""
     normal = [float(v) for v in (cut.get("normal") or [])]
@@ -1426,6 +1443,44 @@ def _zoom_discharges_its_region(zoom: dict) -> bool:
     return wall >= WALL_CELLS_MIN
 
 
+def _all_declared_planes(cuts: list[dict] | None) -> list[tuple[dict, dict, float]]:
+    """(cut, whole frame, planned cell) for EVERY cut that has a zoom to centre a slab on.
+
+    WHY EVERY PLANE AND NOT ONLY THE REFUSED ONES. The obligation and the discharge are decided by
+    two different authorities, and the weaker one builds the obligation. `spec._cuts_that_can_be_
+    shown` names a region unless the PRODUCER explicitly vetoed it, and says so itself: "A cut it
+    did NOT refuse may still be refused by the home side's own measurement of its own copy of the
+    PNG; that stays where it is, and this does not try to predict it." The home side then applies
+    five further floors - the ink floor, cells per row, row count, cell-pitch agreement and the
+    metal between the passages - and `shows_passages` is explicit that "a present False still
+    vetoes, a present True buys nothing". So a cut this engine did not refuse can still fail at
+    home, and it is an obligation nothing in the session can then discharge.
+
+    `volume_available` is the only thing that short-circuits that, and the interior was being
+    deleted in exactly the configuration where the obligation names every cut: `_refused_planes`
+    comes back empty when every zoom answered, so no slab was written and `review_volume` found
+    nothing. This engine never waives the obligation either - `review_requires_the_interior` is
+    True, which skips the waiver.
+
+    A SLAB AT EVERY PLANE COSTS A FEW HUNDRED KiB AND REMOVES THE WHOLE CLASS. It is bounded by
+    `cap` like everything else here, and `_reduce_to_review_slabs` still refuses and lets the
+    caller unlink if the result will not fit. What it buys is that a dropped interior always
+    leaves SOMETHING at every plane a region might be obliged at, whichever way the home side's
+    own measurement goes.
+    """
+    want: list[tuple[dict, dict, float]] = []
+    for cut in cuts or ():
+        frames = list(cut.get("frames") or ())
+        zoom = next((f for f in frames if f.get("scope") == "zoom"), None)
+        if zoom is None:
+            continue
+        whole = next((f for f in frames if f.get("scope") == "whole"), zoom)
+        cell = _slab_cell_m(zoom, whole)
+        if cell > 0.0:
+            want.append((cut, whole, cell))
+    return want
+
+
 def _refused_planes(cuts: list[dict] | None) -> list[tuple[dict, dict, float]]:
     """(cut, whole frame, planned cell) for every cut whose zoom frame cannot answer its question.
 
@@ -1443,11 +1498,7 @@ def _refused_planes(cuts: list[dict] | None) -> list[tuple[dict, dict, float]]:
         if _zoom_discharges_its_region(zoom):
             continue
         whole = next((f for f in frames if f.get("scope") == "whole"), zoom)
-        cell = float(zoom.get("feature_m") or 0.0)
-        if cell <= 0.0:
-            win = list(whole.get("window_m") or [])
-            cell = (min(float(win[0]), float(win[1])) / SLAB_FALLBACK_WINDOW_FRACTION
-                    if len(win) == 2 else 0.0)
+        cell = _slab_cell_m(zoom, whole)
         if cell > 0.0:
             want.append((cut, whole, cell))
     return want
@@ -1460,7 +1511,13 @@ def _reduce_to_review_slabs(src: Path, out: dict, *, cap: int,
     NON-FATAL IN EVERY DIRECTION, like the rest of this aid: False on anything at all, and the
     caller then does what it did before, which is to unlink. A review aid may never cost a mesh.
     """
-    planes = _refused_planes(cuts)
+    # THE REFUSED PLANES FIRST, because those are the ones a reader provably cannot answer from
+    # its picture and so the ones a slab is most needed at. Then every other declared plane, for
+    # the reason in `_all_declared_planes`: the obligation is built by a weaker test than the one
+    # that discharges it, so a plane this engine thinks is fine can still need an interior.
+    _refused = _refused_planes(cuts)
+    _named = {id(c) for c, _w, _cell in _refused}
+    planes = _refused + [t for t in _all_declared_planes(cuts) if id(t[0]) not in _named]
     if mesh is None or not planes:
         return False
     # THE SUFFIX HAS TO SURVIVE, because pyvista picks its writer off the extension and
