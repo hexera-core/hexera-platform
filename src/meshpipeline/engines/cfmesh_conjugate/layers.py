@@ -1357,6 +1357,47 @@ def measured(report: dict, *, interface_patch: str) -> dict:
         "layer_thickness_m": row.get("thickness_m"),
         "layer_thickness_pct": row.get("thickness_pct"),
         "layer_patch": str(interface_patch) if row else "",
+        # ------------------------------------------------------------------ WHERE IT WENT
+        # THE FIGURES THAT STOP ONE NUMBER DOING TWO JOBS, published 2026-11-28. Everything above
+        # was already true; what a reader could not do was tell a SHALLOW pass from a PATCHY one.
+        # `layers_in_mesh` is the patch table's own mesh_layers column, which is
+        # cells_added / ALL patch faces - measured on the delivered plate, 33,123,053 / 16,582,198
+        # = 1.9975, published as "2.00 layers". A pass that grows three full layers on two thirds
+        # of the patch and nothing on the rest reports 2.00, and so does a pass that grows exactly
+        # two layers everywhere. Those are not the same mesh and only one of them is a problem.
+        #
+        # SO THE THREE DEPTHS TRAVEL TOGETHER. `layers_at_iteration_0` is the depth before any
+        # repair ran; `layers_per_extruded_face` averages over the faces that KEPT a stack rather
+        # than over the whole patch; `layers_in_mesh` stays exactly as it was, because
+        # LAYERS_FLOOR_FRACTION is calibrated on it and quietly redefining a number a floor is
+        # drawn on is how a bar stops meaning anything. On job f55ef23e they read 2.0817 / 2.2037
+        # / 1.9975, and ALL THREE miss the 0.75 x 3 = 2.25 floor - which is the floor telling the
+        # truth about a short mesh, not a figure being wrong.
+        #
+        # AND THE TWO CAUSES OF A MISSING FACE, TOLD APART. `never_offered` is the extruder
+        # declining a face where the surface turns by more than featureAngle, which is the PART's
+        # shape; `removed_first_iter` were offered and taken back, which is the MOVER. On that run
+        # 7.4448% was never offered against 1.6949% removed, so of the 9.36 points of coverage
+        # missing, 7.44 were never the pass's to grow. A single coverage figure of 90.6438% cannot
+        # say that, and the fix for each is different.
+        #
+        # `isolated_points_stopped` IS THE MECHANISM ITSELF, in snappyHexMesh's own words
+        # ("displacementMedialAxis : Number of isolated points extrusion stopped"). It read
+        # 2,371,211 on that run before the first addition, and 0 on every featureAngle-180 run of
+        # this part - all of which added 100% of their ideal cells at iteration 0. It is the one
+        # quantity on the whole panel that names WHY the stack is short, so it travels with the
+        # figures rather than staying in a log nobody keeps.
+        "layers_at_iteration_0": got.get("layers_at_iteration_0"),
+        "layers_per_extruded_face": got.get("layers_per_extruded_face"),
+        "layer_faces_on_patch": got.get("faces_on_patch"),
+        "layer_faces_extruded": got.get("faces_extruded"),
+        "layer_faces_never_offered": got.get("faces_never_offered"),
+        "layer_never_offered_pct": got.get("never_offered_pct"),
+        "layer_faces_removed_first_iter": got.get("faces_removed_first_iter"),
+        "layer_removed_first_iter_pct": got.get("removed_first_iter_pct"),
+        "layer_cells_added_first_iter": got.get("cells_added_first_iter"),
+        "layer_cells_added_first_iter_pct": got.get("cells_added_first_iter_pct"),
+        "layer_isolated_points_stopped": got.get("isolated_points_stopped"),
     }
     return {k: v for k, v in out.items() if v not in (None, "")}
 

@@ -1586,6 +1586,22 @@ function initViewer(job,surf,uiCfg){
                     has('layer_patch')?`, on ${esc(String(q.layer_patch))}`:''}`)
             : isNum(asked)?`${show(asked)} asked for`:''));
     }
+    /* AND WHICH DEPTH THAT NUMBER IS, because one number was doing two jobs. The row above is
+       `layers_in_mesh`, the patch table's own mesh_layers column, which is cells_added over ALL
+       patch faces: measured on job f55ef23e, 33,123,053 / 16,582,198 = 1.9975, shown as 2.00. A
+       pass that grows three full layers on two thirds of the interface and nothing on the rest
+       reports 2.00, and so does a pass that grows exactly two layers everywhere. Those are not
+       the same mesh, only one of them is a problem, and this panel could not tell them apart.
+       Three depths read downwards say which: 1.9975 over the whole interface, 2.0817 before any
+       repair ran, 2.2037 on the faces that actually kept a stack. */
+    if(has('layers_at_iteration_0'))wall.push(row('layers_at_iteration_0',
+      'Layers before repair','','averaged over the whole interface, before any repair iteration'));
+    if(has('layers_per_extruded_face'))wall.push(row('layers_per_extruded_face',
+      'Layers where a stack grew','',
+      isNum(q.layer_faces_extruded)&&q.layer_faces_extruded>0
+        ? `averaged over the ${show(q.layer_faces_extruded)} faces that kept one, not over the `
+          +`whole interface`
+        : 'averaged over the faces that kept one, not over the whole interface'));
     /* HOW WELL THE STACK GREW. Six figures, and not one of them is a bar: this panel states
        what was measured and leaves every floor to `layer_short` below, which carries
        `layers.shortfalls`' own sentences with its own numbers already in them. Restating 95.0,
@@ -1604,8 +1620,54 @@ function initViewer(job,surf,uiCfg){
        BESIDE COVERAGE AND NOT INSTEAD OF IT - the three are one sentence read downwards. */
     if(has('layer_offered_pct'))wall.push(row('layer_offered_pct','Layer faces offered','%',
       'of the surface was offered to the layer pass at all'));
+    /* THE LOSS AT THE FIRST PASS, WHICH NEITHER FIGURE EITHER SIDE OF IT CAN SHOW.
+       `layer_offered_pct` is what was offered and `layer_kept_of_offered_pct` counts from
+       iteration 0's POST-REMOVAL total, so the faces offered and then taken back AT iteration 0
+       fall between the two and appear in neither: 1.69% of the interface on job f55ef23e, where
+       7.44% was never offered at all. Those two are a different defect with a different fix - a
+       face nobody offered is the part's shape declining to turn, a face taken back is the mover -
+       and a reader holding only the 9.14-point total cannot tell which they have. */
+    /* NEVER OFFERED AT ALL, which is the part's own shape and not a defect in the pass. The
+       extruder declines a face where the surface turns by more than featureAngle, and on job
+       f55ef23e that was 7.4448% of the interface - 1,234,510 faces of 16,582,198. Said as its own
+       row because a reader who cannot separate it from the mover's losses reads a staircase as a
+       bug, and the two have different fixes. */
+    if(has('layer_never_offered_pct'))wall.push(row('layer_never_offered_pct',
+      'Layer faces never offered','%',
+      isNum(q.layer_faces_never_offered)&&isNum(q.layer_faces_on_patch)
+        ? `of the interface turned too sharply to grow a prism on `
+          +`(${show(q.layer_faces_never_offered)} of ${show(q.layer_faces_on_patch)} faces)`
+        : 'of the interface turned too sharply to grow a prism on'));
+    if(has('layer_removed_first_iter_pct'))wall.push(row('layer_removed_first_iter_pct',
+      'Layer faces taken back','%',
+      isNum(q.layer_faces_removed_first_iter)
+        ? `of the interface was offered and then withdrawn at the first pass `
+          +`(${show(q.layer_faces_removed_first_iter)} faces)`
+        : 'of the interface was offered and then withdrawn at the first pass'));
+    /* WHAT THE FIRST PASS PUT IN, against what three full layers everywhere would have been.
+       69.3895% on that run, from 34,518,913 cells of an ideal 49,746,594 - and the final figure
+       is 66.5836%, so the repair iterations gave back 2.8 points to take 561,959 illegal faces
+       down to 49. Both numbers are needed to see that trade at all. */
+    if(has('layer_cells_added_first_iter_pct'))wall.push(row('layer_cells_added_first_iter_pct',
+      'Layer cells at the first pass','%',
+      isNum(q.layer_cells_added_first_iter)
+        ? `of three full layers everywhere (${show(q.layer_cells_added_first_iter)} cells), `
+          +`before any repair iteration`
+        : 'of three full layers everywhere, before any repair iteration'));
     if(has('layer_kept_of_offered_pct'))wall.push(
       row('layer_kept_of_offered_pct','Layer faces kept','%','of the faces it was offered'));
+    /* AND THE MECHANISM, IN THE MESHER'S OWN WORDS. Every figure above says THAT the stack is
+       short; this is the only one that says WHY. snappyHexMesh prints it as
+       "displacementMedialAxis : Number of isolated points extrusion stopped", and on job
+       f55ef23e it read 2,371,211 before the first addition - against 0 on every run of this part
+       at featureAngle 180, all of which added 100% of their ideal cells at iteration 0. It is
+       stated and not judged: there is no calibrated bar for it, and inventing one here would give
+       a quantity a second reader on the far side of an HTTP boundary. */
+    if(has('layer_isolated_points_stopped'))wall.push(row('layer_isolated_points_stopped',
+      'Extrusion stopped at','',
+      q.layer_isolated_points_stopped===0
+        ? 'no points - the mover grew every stack it started'
+        : 'points, where the medial axis left no room to grow a stack'));
     if(has('layer_thickness_pct'))wall.push(row('layer_thickness_pct','Layer thickness','%',
       has('layer_thickness_m')?`of the thickness asked for, ${len(q.layer_thickness_m)} grown`
                               :'of the thickness asked for'));

@@ -78,6 +78,27 @@ _INT_METRICS: Final[tuple[str, ...]] = (
     # and the conformality itself, which is the number that says the interface is real: the same
     # face count on each side of it
     "interface_faces_fluid", "interface_faces_solid",
+    # ------------------------------------------------------------------ WHERE THE STACK WENT
+    # THE TWO CAUSES OF A MISSING FACE, TOLD APART, and the mechanism that names why. A single
+    # coverage figure cannot do it: 90.6438% is what job f55ef23e covered, and of the 9.36 points
+    # missing, 7.44 were NEVER OFFERED - the extruder declining a face where the surface turns by
+    # more than featureAngle, which is the part's own shape - against 1.69 that were offered and
+    # then taken back, which is the mover. The fix for each is a different one, and a reader
+    # holding only the total cannot tell which they need.
+    #
+    # `layer_isolated_points_stopped` IS THE MECHANISM, in snappyHexMesh's own words
+    # ("displacementMedialAxis : Number of isolated points extrusion stopped"). It read 2,371,211
+    # on that run BEFORE the first addition, and 0 on every featureAngle-180 run of this part -
+    # all of which added 100% of their ideal cells at iteration 0. It is the only quantity on this
+    # panel that says WHY a stack is short rather than THAT it is, so it belongs beside the
+    # figures and not in a log nobody keeps.
+    #
+    # THE DENOMINATORS TRAVEL WITH THEM. `layer_faces_on_patch` is what every percentage here is
+    # over, and `layer_faces_extruded` is what `layers_per_extruded_face` divides by: a share with
+    # no denominator on the page is a figure a reader has to take on trust.
+    "layer_faces_on_patch", "layer_faces_extruded",
+    "layer_faces_never_offered", "layer_faces_removed_first_iter",
+    "layer_cells_added_first_iter", "layer_isolated_points_stopped",
 )
 _FLOAT_METRICS: Final[tuple[str, ...]] = (
     "max_non_ortho", "max_skewness", "avg_non_ortho", "skew_fraction",
@@ -121,6 +142,29 @@ _FLOAT_METRICS: Final[tuple[str, ...]] = (
     # and the stack as a LENGTH, beside `near_wall_cell_m`: 1.09e-05 m on the plate. A percentage
     # of an ask says nothing about what it resolves.
     "layer_thickness_m",
+    # ------------------------------------------------------------------ THREE DEPTHS, NOT ONE
+    # ONE NUMBER WAS DOING TWO JOBS AND THE PANEL SHOWED ONLY THAT NUMBER. `layers_in_mesh` is the
+    # patch table's own mesh_layers column, which is cells_added / ALL patch faces: measured on
+    # job f55ef23e, 33,123,053 / 16,582,198 = 1.9975, published as "2.00 layers". A pass that
+    # grows three full layers on two thirds of the patch and nothing on the rest reports 2.00, and
+    # so does a pass that grows exactly two layers everywhere. Those are not the same mesh, only
+    # one of them is a problem, and the panel could not tell them apart.
+    #
+    # SO THE OTHER TWO DEPTHS TRAVEL BESIDE IT. `layers_at_iteration_0` is the depth before any
+    # repair ran, and `layers_per_extruded_face` averages over the faces that KEPT a stack rather
+    # than over the whole patch. On that run: 1.9975 / 2.0817 / 2.2037. Together they say the
+    # stack was two cells deep before the first repair and that the repair cost 0.08 of a layer -
+    # neither of which the single figure could say.
+    #
+    # `layers_in_mesh` IS NOT TOUCHED, and that is deliberate: LAYERS_FLOOR_FRACTION is calibrated
+    # on it, and quietly redefining a number a floor is drawn on is how a bar stops meaning
+    # anything. Note that all THREE depths miss the 0.75 x 3 = 2.25 floor on that run, so the
+    # floor is telling the truth about a short mesh - this edit makes the panel honest about WHAT
+    # is short, and does not make anything pass.
+    "layers_at_iteration_0", "layers_per_extruded_face",
+    # The shares the two face counts above are of the patch, so a reader does not divide by hand.
+    "layer_never_offered_pct", "layer_removed_first_iter_pct",
+    "layer_cells_added_first_iter_pct",
 )
 
 #: Declared yes/no answers. A GROUP OF THEIR OWN BECAUSE A BOOL IS NOT A SMALL NUMBER: `_as_int`

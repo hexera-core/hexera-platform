@@ -520,7 +520,18 @@ def _near_wall(plan: dict, grown: dict | None = None) -> dict:
 _LAYER_FIGURES = ("layer_coverage_pct", "layer_offered_pct", "layer_kept_of_offered_pct",
                   "layer_thickness_pct", "layer_thickness_m",
                   "layer_faces_in_error", "layer_cells_added", "layer_iterations",
-                  "layer_seconds", "layer_patch", "layers_asked", "layers_in_mesh")
+                  "layer_seconds", "layer_patch", "layers_asked", "layers_in_mesh",
+                  # THE THREE DEPTHS AND THE TWO CAUSES - see `layers.measured`, which is the one
+                  # spelling of these names. They were computed and published into
+                  # `conjugate_report.json` on 2026-11-27 and then read by NOTHING: this tuple is
+                  # what reaches the manifest, so they died here. Additive only - every figure
+                  # above keeps its name, its value and its floor.
+                  "layers_at_iteration_0", "layers_per_extruded_face",
+                  "layer_faces_on_patch", "layer_faces_extruded",
+                  "layer_faces_never_offered", "layer_never_offered_pct",
+                  "layer_faces_removed_first_iter", "layer_removed_first_iter_pct",
+                  "layer_cells_added_first_iter", "layer_cells_added_first_iter_pct",
+                  "layer_isolated_points_stopped")
 
 
 #: THERE IS NO `_floors_had_a_reading` HELPER AND THIS NOTE IS WHY, 2026-11-18. It existed, it
