@@ -1187,6 +1187,56 @@ def _aim_from_a_drawn_cut(mesh, cuts: list[dict], *, root: Path, ws: Path, pv, w
     # this the context frame of the one cut that found the array is the only frame in the run that
     # can say "shows_structure" of a moire of it: measured 11 repeats at 1,664 um on a frame whose
     # scale is 138.67 um/px, against passages of 100.63 um.
+    # AND THE ONE COORDINATE IT MEASURED IS GIVEN TO THE CUTS THAT ARE MISSING IT.
+    #
+    # WHAT WAS WRONG. `replan` takes an axis index and nothing else, so the only thing that
+    # crossed from the drawn picture into the rebuilt cut set was the repeat axis. Every other
+    # cut came back with a PLAN centre - and `slices.py:303` builds that as the middle of the
+    # fine zone. On this plate the middle of the fine zone is empty: the engine measured it
+    # itself (see the table above POSITION_TRIES) and found 79 repeats at y = 22.111 and
+    # 22.713 mm and nothing at all at 23.917 mm. Reproduced from the plan on disk: the zone is
+    # y = 21.5095 to 33.5468 mm, so its middle is 27.5282 mm, the zoom window is 6.0379 mm tall,
+    # and its lower edge lands at 24.5092 mm - 1.7960 mm ABOVE the array. No in-plane search
+    # could reach it, because the only in-plane search is `_candidate_centres`, which aims at the
+    # densest histogram patch, and on this part the densest thing on the plane is a plenum.
+    #
+    # WHY THE NUMBER TRANSFERS WITHOUT CONVERSION. The aiming cut is normal to the THIN axis and
+    # `_place_by_what_is_drawn` wrote the plane it found into `aim["origin"][thin]`. The flow
+    # axis is chosen from the axes that are not thin (slices.py:311), so thin is an IN-PLANE axis
+    # of every other cut on this part - and a coordinate along it is exactly the in-plane centre
+    # component those zoom frames were missing.
+    #
+    # IT COSTS NOTHING AND CHANGES NO BAR. `_candidate_centres` returns the planned centre FIRST,
+    # before any density pick, so a centre written here is honoured ahead of density with no new
+    # search; when it holds the array the search stops at the first placement instead of drawing
+    # all twenty. The whole-part context frame is deliberately left alone - it is centred on the
+    # BLOCK's middle so the rest of the part stays in view - and `search_m` is untouched, so a
+    # plane still cannot wander outside its own zone.
+    _aim_axis = aim.get("normal_axis")
+    if _aim_axis is None:
+        _nrm = [float(v) for v in (aim.get("normal") or [1.0, 0.0, 0.0])]
+        _aim_axis = max(range(3), key=lambda k: abs(_nrm[k])) if len(_nrm) == 3 else 0
+    _aim_axis = int(_aim_axis)
+    _at = float((aim.get("origin") or [0.0, 0.0, 0.0])[_aim_axis])
+    for _c in cuts:
+        if _c is aim:
+            continue
+        _pa = [int(v) for v in (_c.get("plane_axes") or [])]
+        if len(_pa) != 2 or _aim_axis not in _pa:
+            continue
+        _slot = 0 if _aim_axis == _pa[0] else 1
+        for _f in _c.get("frames") or ():
+            if _f.get("scope") != "zoom":
+                continue
+            _centre = [float(v) for v in (_f.get("centre_m") or ())]
+            if len(_centre) != 2:
+                continue
+            _centre[_slot] = _at
+            _f["centre_m"] = _centre
+            _f["centre_source"] = (
+                f"{AIM_FROM_CUT}'s own drawn frame measured the array at "
+                f"{'xyz'[_aim_axis]} = {_at * 1e3:.3f} mm, so this window is centred there and "
+                "not on the middle of the fine zone, which on this part holds nothing")
     _rematch(aim, root=root, expect_period_m=float(found.get("period_m") or 0.0))
     out["aim"] = (
         f"the passages were measured to repeat along {'xyz'[int(axis)]} every "
@@ -1688,7 +1738,22 @@ def _place_by_what_is_drawn(mesh, cut: dict, *, frame: dict, axis: int, ah: int,
                 continue
             source = (planned_centre_source if n == 0 else
                       f"the densest window-sized patch of this plane (rank {n})")
-            score = (int(content.get("repeats") or 0), float(content.get("ink_fraction") or 0.0))
+            # A FAILED SEARCH USED TO SELECT FOR THE ONE FRAME THAT CANNOT SHOW ANYTHING.
+            # The second term was `ink_fraction`, highest wins, and `ink` is `a < INK_MAX` - so a
+            # fully saturated frame reads 1.000000, the maximum the term can take. With no
+            # placement showing structure the tiebreak therefore published the MOST saturated
+            # frame drawn, which is exactly the plenum signature `picture_structure` exists to
+            # catch: measured on across_the_flow_zoom.png of job cba7ac69, ink_fraction 1.000000,
+            # zero pixels at or above 250 of 1,228,800, 0 repeats. That frame was not an unlucky
+            # draw, it is what the score asked for.
+            #
+            # BALANCE INSTEAD OF QUANTITY. `min(ink, 1 - ink)` is 0 at both ends and peaks at a
+            # half, so of the frames that answered nothing it keeps the one a reader can see both
+            # the coolant and the metal in - which is the whole stated purpose of publishing a
+            # refused frame ("so a reader can see WHAT was drawn instead"). An all-ink frame and
+            # an empty frame both score 0, correctly: neither shows a thing.
+            _ink = float(content.get("ink_fraction") or 0.0)
+            score = (int(content.get("repeats") or 0), min(_ink, 1.0 - _ink))
             if content.get("shows_structure"):
                 best = (score, origin, centre, sl, content, source)
                 break
