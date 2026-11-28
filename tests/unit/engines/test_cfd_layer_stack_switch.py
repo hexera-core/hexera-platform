@@ -145,3 +145,25 @@ def test_cfmesh_run_plan_carries_the_wake_cells_the_size_brake_measures(tmp_path
     est = json.loads((tmp_path / "wake" / CM.RUN_PLAN_FILE).read_text())["estimated_cells"]
     assert est == pytest.approx(bare["run_plan"]["estimated_cells"] + wake_cells, abs=1)
     assert out["run_plan"]["estimated_cells"] == est
+
+
+def test_cfmesh_wake_boxes_sit_on_their_octree_level_not_one_finer(tmp_path):
+    # cfMesh refines while a cell is larger than the size asked: an exact max_cell / 2^n wake box went one level
+    # finer (8x its cells), so the octree read 1.85 M on a 0.42 M plan and the size brake stopped it (v0.2.11)
+    import re
+
+    from meshpipeline.engines.cfmesh import cfmesh_runner as CM
+    from meshpipeline.engines.wake_region import WakeRequest
+    kw = {"surface_file": "constant/triSurface/case.fms", "wall_patch": "body",
+          "patches": [{"name": "body", "type": "wall"}, {"name": "farfield", "type": "farfield"}],
+          "body_bbox": ([0.0, 0.0, 0.0], [0.1, 0.04, 0.03]), "L": 0.1,
+          "domain_min": [-0.5, -0.4, -0.4], "domain_max": [1.1, 0.44, 0.43],
+          "strategy": {"wall_cell": 0.002}, "cell_budget": 4_000_000, "wall_area": 0.02}
+    out = CM.render_cfmesh_case(tmp_path, wake=WakeRequest(flow_axis="+x"), **kw)
+    tiers = out["wake_refinement"]["tiers"]
+    assert tiers
+    asked = [float(c) for c in re.findall(r"wake\d+ \{ type box; cellSize ([0-9.eE+-]+);",
+                                           (tmp_path / "system" / "meshDict").read_text())]
+    assert len(asked) == len(tiers)
+    for cell, tier in zip(asked, tiers):
+        assert tier["cell_m"] < cell < 1.01 * tier["cell_m"]
